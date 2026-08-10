@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Runtime data and secrets
+ai_probe_config.key
+ai_probe_projects*.json
+ai_probe_usage*.json
+
+# Local build artifacts and historical backups
+build/
+dist/
+*.exe
+*.zip
+app - 副本*.py
