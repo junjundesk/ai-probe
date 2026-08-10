@@ -78,10 +78,6 @@ python -m ai_probe
 - 使用 `ruff` 保持代码风格：`ruff check .`、`ruff format --check .`
 - GitHub Actions 会在 Python 3.10 至 3.13 上执行 lint、核心回归测试和构建检查。
 
-## 贡献
-
-请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 后提交 Pull Request。所有参与者需遵守 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
-
 ## 安全
 
 发现安全问题请通过 [SECURITY.md](SECURITY.md) 中描述的私有方式报告，不要公开提交漏洞细节。
