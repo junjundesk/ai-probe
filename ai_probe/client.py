@@ -10,7 +10,7 @@ try:
 except ImportError:
     requests = None
 
-from .config import TEST_PROMPT
+from .config import PROBE_TIMEOUT, TEST_PROMPT
 from .utils import (
     error_message_from_response,
     extract_stream_text,
@@ -122,7 +122,7 @@ class OpenAIClient:
                 headers={**self.headers, "Accept": "text/event-stream"},
                 json=body,
                 stream=True,
-                timeout=(10, 30),
+                timeout=(8, PROBE_TIMEOUT),
                 proxies=self.proxies,
             ) as response:
                 if not response.ok:

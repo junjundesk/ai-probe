@@ -5,16 +5,47 @@ from __future__ import annotations
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime
 from tkinter import END, messagebox
 
 from ..client import OpenAIClient
-from ..config import MAX_WORKERS, PROBE_UI_BATCH_SIZE
+from ..config import MAX_WORKERS, PROBE_TIMEOUT, PROBE_UI_BATCH_SIZE
 from ..projects import _project_keys, api_key_label, project_key_for_model
 from ..utils import parse_custom_headers, parse_manual_headers, utc_timestamp
 
+_SKIP_PROBE_KEYWORDS = (
+    "dall-e",
+    "dalle",
+    "gpt-image",
+    "image-1",
+    "flux",
+    "sdxl",
+    "stable-diffusion",
+    "midjourney",
+    "video",
+    "veo",
+    "sora",
+    "kling",
+    "runway",
+    "pika",
+    "tts",
+    "whisper",
+    "asr",
+    "stt",
+    "embedding",
+    "embed",
+    "rerank",
+)
+
 
 class ModelsMixin:
+    @staticmethod
+    def _format_ms(value) -> str:
+        if value is None:
+            return "-"
+        return f"{value / 1000:.1f}s"
+
     def _refresh_models(self):
         project = self._project()
         if not project:
@@ -58,8 +89,8 @@ class ModelsMixin:
         if item_id is None or not self.model_tree.exists(item_id):
             return
         status = model.get("status", "未测试")
-        first = f"{model['first_ms']} ms" if model.get("first_ms") is not None else "-"
-        total = f"{model['total_ms']} ms" if model.get("total_ms") is not None else "-"
+        first = self._format_ms(model.get("first_ms"))
+        total = self._format_ms(model.get("total_ms"))
         detail = (model.get("reply") or model.get("error") or "").replace("\n", " ")
         key_label = api_key_label(project_key_for_model(self._project(), model))
         tag = {"可用": "ok", "不可用": "fail", "测试中": "testing"}.get(status, "unknown")
@@ -354,50 +385,82 @@ class ModelsMixin:
             if not model_entries:
                 self._post(self._set_status, "未获取到可用模型")
                 return
+            probe_entries = [entry for entry in model_entries if self._is_text_probe_suitable(entry["id"])]
+            skipped = len(model_entries) - len(probe_entries)
+            if skipped:
+                self._post(self._log, f"跳过 {skipped} 个不适合文本测活的模型（图像/视频/音频/Embedding 等）")
+            if not probe_entries:
+                self._post(self._set_status, "没有适合文本测活的模型")
+                return
             self._post(self._apply_discovered, project_id, model_entries)
+            self._pending_detected = []
 
-            def on_result(entry, result, _completed, _total):
+            def on_result(entry, result, completed, total):
                 if result["ok"]:
-                    self._post(self._add_detected_available, project_id, entry, result)
+                    self._pending_detected.append((entry, result))
+                if len(self._pending_detected) >= PROBE_UI_BATCH_SIZE:
+                    pending = self._pending_detected[:]
+                    self._pending_detected.clear()
+                    self._post(self._add_detected_available_batch, project_id, pending, completed, total)
 
             results = self._run_probes(
                 clients,
-                model_entries,
+                probe_entries,
                 project_id,
                 progress_label="检测全部模型",
                 update_existing=False,
                 on_result=on_result,
             )
-            entry_by_id = {entry["id"]: entry for entry in model_entries}
+            if self._pending_detected:
+                self._post(
+                    self._add_detected_available_batch,
+                    project_id,
+                    self._pending_detected[:],
+                    len(results),
+                    len(probe_entries),
+                )
+                self._pending_detected.clear()
+            entry_by_id = {entry["id"]: entry for entry in probe_entries}
             available = [
                 self._entry_from_result(entry_by_id[model_id], result) for model_id, result in results if result["ok"]
             ]
-            self._post(self._replace_available, project_id, available, len(model_entries))
+            self._post(self._replace_available, project_id, available, len(probe_entries))
 
         self._start_job("正在获取并检测全部模型...", work)
 
-    def _add_detected_available(self, project_id: str, entry: dict, result: dict):
+    @staticmethod
+    def _is_text_probe_suitable(model_id: str) -> bool:
+        lowered = model_id.lower()
+        return not any(keyword in lowered for keyword in _SKIP_PROBE_KEYWORDS)
+
+    def _add_detected_available_batch(self, project_id: str, pending: list, completed: int, total: int):
         project = self._project(project_id)
         if not project:
             return
-        model = next((item for item in project["models"] if item["id"] == entry["id"]), None)
-        if model is None:
-            model = self._entry_from_result(entry, result)
-            project["models"].append(model)
-            project["models"].sort(key=lambda item: item["id"].lower())
-        else:
-            model.update({key: value for key, value in result.items() if key != "ok"})
+        models = {model["id"]: model for model in project["models"]}
+        for entry, result in pending:
+            model = models.get(entry["id"])
+            if model is None:
+                model = self._entry_from_result(entry, result)
+                project["models"].append(model)
+                models[entry["id"]] = model
+            else:
+                model.update({key: value for key, value in result.items() if key != "ok"})
+        project["models"].sort(key=lambda item: item["id"].lower())
         self._schedule_probe_save()
         if project_id == self.current_id:
-            item_id = self.model_tree_items.get(entry["id"])
-            if item_id is None or not self.model_tree.exists(item_id):
-                item_id = f"model_{self.next_model_tree_item}"
-                self.next_model_tree_item += 1
-                self.model_tree_items[entry["id"]] = item_id
-                self.tree_model_ids[item_id] = entry["id"]
-                self.model_tree.insert("", END, iid=item_id)
-            self._update_model_row(model)
+            for entry, _ in pending:
+                model = models[entry["id"]]
+                item_id = self.model_tree_items.get(entry["id"])
+                if item_id is None or not self.model_tree.exists(item_id):
+                    item_id = f"model_{self.next_model_tree_item}"
+                    self.next_model_tree_item += 1
+                    self.model_tree_items[entry["id"]] = item_id
+                    self.tree_model_ids[item_id] = entry["id"]
+                    self.model_tree.insert("", END, iid=item_id)
+                self._update_model_row(model)
             self.added_count.set(f"已添加 {len(project['models'])}")
+        self.status.set(f"检测全部模型：{completed}/{total}")
 
     def _replace_available(self, project_id: str, available: list[dict], total: int):
         project = self._project(project_id)
@@ -419,10 +482,16 @@ class ModelsMixin:
 
     def _test_all(self):
         project = self._project()
-        model_ids = [model["id"] for model in project["models"]] if project else []
-        if not model_ids:
+        if not project or not project["models"]:
             messagebox.showinfo("测试模型", "当前项目还没有模型")
             return
+        model_ids = [model["id"] for model in project["models"] if self._is_text_probe_suitable(model["id"])]
+        if not model_ids:
+            messagebox.showinfo("测试模型", "当前项目没有适合文本测活的模型")
+            return
+        skipped = len(project["models"]) - len(model_ids)
+        if skipped:
+            self._log(f"测活全部：跳过 {skipped} 个不适合文本测活的模型")
         self._test_models(model_ids)
 
     def _test_models(self, model_ids: list[str]):
@@ -480,15 +549,21 @@ class ModelsMixin:
                 entry = future_map[future]
                 model_id = entry["id"]
                 try:
-                    result = future.result()
+                    result = future.result(timeout=PROBE_TIMEOUT + 3)
                 except Exception as exc:
+                    if isinstance(exc, FutureTimeoutError):
+                        error_text = f"超时（{PROBE_TIMEOUT:.0f}s 未响应）"
+                        total_ms = round((PROBE_TIMEOUT + 3) * 1000)
+                    else:
+                        error_text = str(exc)
+                        total_ms = None
                     result = {
                         "ok": False,
                         "status": "不可用",
                         "first_ms": None,
-                        "total_ms": None,
+                        "total_ms": total_ms,
                         "reply": "",
-                        "error": str(exc),
+                        "error": error_text,
                         "tested_at": utc_timestamp(),
                     }
                 results.append((model_id, result))
@@ -558,9 +633,10 @@ class ModelsMixin:
                 changed = True
                 if project_id == self.current_id:
                     self._update_model_row(model)
-            self._log_probe_result(model_id, result)
         if changed:
             self._schedule_probe_save()
+        ok_in_batch = sum(1 for _, result in results if result["ok"])
+        self._log(f"{progress_label}：{completed}/{total}，本批可用 {ok_in_batch}/{len(results)}")
         self.status.set(f"{progress_label}：{completed}/{total}")
 
     def _schedule_probe_save(self):
@@ -573,10 +649,6 @@ class ModelsMixin:
             self.root.after_cancel(self.probe_save_after)
             self.probe_save_after = None
         self._save_store()
-
-    def _log_probe_result(self, model_id: str, result: dict):
-        detail = result.get("reply") or result.get("error") or ""
-        self._log(f"{model_id}: {result['status']}，{result.get('first_ms') or '-'} ms，{detail[:120]}")
 
     def _show_model_detail(self, _event=None):
         selected = self._selected_model_ids()

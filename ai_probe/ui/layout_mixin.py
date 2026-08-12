@@ -372,7 +372,7 @@ class LayoutMixin:
         self.model_tree.heading("#0", text="模型")
         self.model_tree.heading("key", text="密钥")
         self.model_tree.heading("status", text="状态")
-        self.model_tree.heading("first", text="首包延时")
+        self.model_tree.heading("first", text="首字延时")
         self.model_tree.heading("total", text="总耗时")
         self.model_tree.heading("reply", text="响应 / 错误")
         self.model_tree.column("#0", width=210, minwidth=130)
