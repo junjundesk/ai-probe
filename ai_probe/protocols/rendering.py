@@ -19,6 +19,7 @@ class _StreamRenderer:
         self.created = int(time.time())
         self.started = False
         self.finished = False
+        self.has_output = False
         self.stop_reason = "stop"
         self.text = ""
         self.tools = {}
@@ -121,6 +122,7 @@ class _StreamRenderer:
         output = self._ensure_started()
         if event_type == "reasoning":
             reasoning = event.get("text", "")
+            self.has_output = self.has_output or bool(reasoning)
             if self.target_mode == "chat":
                 output.append(
                     self._sse(
@@ -162,6 +164,7 @@ class _StreamRenderer:
         elif event_type == "text":
             text = event.get("text", "")
             self.text += text
+            self.has_output = self.has_output or bool(text)
             if self.target_mode == "chat":
                 chunk = {
                     "id": self.id,
@@ -233,6 +236,7 @@ class _StreamRenderer:
                 )
         elif event_type == "tool_start":
             index = int(event.get("index", 0))
+            self.has_output = True
             tool = self.tools.setdefault(
                 index, {"id": event.get("id", ""), "name": event.get("name", ""), "arguments": ""}
             )
@@ -310,6 +314,7 @@ class _StreamRenderer:
             tool = self.tools[index]
             arguments = event.get("arguments", "")
             tool["arguments"] += arguments
+            self.has_output = self.has_output or bool(arguments)
             if self.target_mode == "chat":
                 delta = {"tool_calls": [{"index": index, "function": {"arguments": arguments}}]}
                 output.append(

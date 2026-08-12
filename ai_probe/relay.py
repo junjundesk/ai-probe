@@ -5,6 +5,9 @@ from __future__ import annotations
 import hmac
 import json
 import threading
+import traceback
+import uuid
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
@@ -13,6 +16,7 @@ except ImportError:
     requests = None
 
 from .client import OpenAIClient
+from .config import RELAY_ERROR_LOG
 from .projects import client_from_project
 from .protocols import (
     _canonical_stream_events,
@@ -40,6 +44,7 @@ class RelayServer:
         self.httpd = None
         self.thread = None
         self._lock = threading.Lock()
+        self._log_lock = threading.Lock()
         self._rr = {}
         self._model_routes_cache = None
         self._responses_function_only = set()
@@ -99,6 +104,7 @@ class RelayServer:
                 )
 
             def do_POST(self):
+                request_id = uuid.uuid4().hex[:12]
                 if not self._authorized():
                     return self._error(401, "本地中转密钥无效")
                 length = self.headers.get("Content-Length")
@@ -168,6 +174,7 @@ class RelayServer:
                                 converted,
                                 requested_stream,
                                 custom_tool_names,
+                                request_id,
                             )
                         error_text = error_message_from_response(response)
                         response.close()
@@ -199,12 +206,24 @@ class RelayServer:
                                     True,
                                     requested_stream,
                                     custom_tool_names,
+                                    request_id,
                                 )
                             error_text = error_message_from_response(response)
                             response.close()
                         last_error = f"HTTP {response.status_code}: {error_text}"
                     except Exception as exc:
                         last_error = str(exc)
+                        owner.log_exception(
+                            "upstream_request",
+                            exc,
+                            request_id=request_id,
+                            path=incoming_path,
+                            incoming_mode=incoming_mode,
+                            upstream_mode=getattr(locals().get("client"), "api_mode", "unknown"),
+                            project=project.get("name") or project.get("id") or "unknown",
+                            model=model,
+                            requested_stream=requested_stream,
+                        )
                 self._error(502, last_error or "所有上游接口均不可用", "upstream_error")
 
         self.httpd = ThreadingHTTPServer((self.host, self.port), Handler)
@@ -217,8 +236,35 @@ class RelayServer:
         if self.httpd:
             self.httpd.shutdown()
             self.httpd.server_close()
-            self.httpd = None
+        self.httpd = None
         self.thread = None
+
+    @staticmethod
+    def _recoverable_stream_disconnect(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "response ended prematurely",
+                "incomplete read",
+                "stream closed",
+                "connection broken",
+                "connection reset",
+                "remote end closed connection",
+            )
+        )
+
+    def log_exception(self, stage: str, exc: Exception, **context):
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        details = json.dumps(context, ensure_ascii=False, default=str)
+        entry = f"[{timestamp}] {stage}\ncontext={details}\n{''.join(traceback.format_exception(exc))}\n"
+        try:
+            with self._log_lock, RELAY_ERROR_LOG.open("a", encoding="utf-8") as log_file:
+                log_file.write(entry)
+        except OSError as log_exc:
+            self.app._post(self.app._log, f"中转异常日志写入失败：{log_exc}")
+            return
+        self.app._post(self.app._log, f"中转异常[{stage}]：{exc}；详情：{RELAY_ERROR_LOG}")
 
     def model_routes(self) -> dict[str, list[dict]]:
         with self._lock:
@@ -368,6 +414,7 @@ class RelayServer:
         converted: bool,
         requested_stream: bool,
         custom_tool_names: set[str] | None = None,
+        request_id: str = "",
     ):
         if not converted:
             if requested_stream:
@@ -424,9 +471,23 @@ class RelayServer:
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         except Exception as exc:
+            self.log_exception(
+                "converted_stream",
+                exc,
+                incoming_mode=incoming_mode,
+                upstream_mode=upstream_mode,
+                project=project.get("name") or project.get("id") or "unknown",
+                model=model,
+                has_output=renderer.has_output,
+                request_id=request_id,
+            )
             try:
-                error = {"type": "error", "error": {"type": "api_error", "message": str(exc)}}
-                write_stream(f"event: error\ndata: {json.dumps(error, ensure_ascii=False)}\n\n".encode())
+                if incoming_mode == "responses" and renderer.has_output and self._recoverable_stream_disconnect(exc):
+                    for chunk in renderer.finish():
+                        write_stream(chunk)
+                else:
+                    error = {"type": "error", "error": {"type": "api_error", "message": str(exc)}}
+                    write_stream(f"event: error\ndata: {json.dumps(error, ensure_ascii=False)}\n\n".encode())
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass
         finally:

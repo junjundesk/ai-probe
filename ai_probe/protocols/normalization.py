@@ -135,6 +135,7 @@ def _normalize_response(payload: dict, api_mode: str, model: str, custom_tool_na
 def _canonical_stream_events(response, api_mode: str, model: str, custom_tool_names: set[str] | None = None):
     custom_tool_names = custom_tool_names or set()
     started = False
+    stopped = False
     event_name = ""
     tool_names = {}
     tool_indices = {}
@@ -144,7 +145,16 @@ def _canonical_stream_events(response, api_mode: str, model: str, custom_tool_na
             tool_indices[source_index] = len(tool_indices)
         return tool_indices[source_index]
 
-    for raw_line in response.iter_lines(chunk_size=1):
+    lines = iter(response.iter_lines(chunk_size=1))
+    while True:
+        try:
+            raw_line = next(lines)
+        except StopIteration:
+            break
+        except Exception:
+            if not stopped:
+                raise
+            break
         line = raw_line.decode("utf-8", "replace") if isinstance(raw_line, bytes) else raw_line
         if line.startswith("event:"):
             event_name = line[6:].strip()
@@ -158,6 +168,8 @@ def _canonical_stream_events(response, api_mode: str, model: str, custom_tool_na
         try:
             payload = json.loads(data)
         except ValueError:
+            continue
+        if not isinstance(payload, dict):
             continue
         event_type = payload.get("type") or event_name
         if event_type == "error" or "error" in payload and not payload.get("choices"):
@@ -198,6 +210,7 @@ def _canonical_stream_events(response, api_mode: str, model: str, custom_tool_na
                     "cached_tokens": cached_tokens,
                 }
             if choice.get("finish_reason"):
+                stopped = True
                 yield {"type": "stop", "reason": choice["finish_reason"]}
         elif api_mode == "responses":
             response_data = payload.get("response") or {}
@@ -300,6 +313,7 @@ def _canonical_stream_events(response, api_mode: str, model: str, custom_tool_na
                     "output_tokens": output_tokens,
                     "cached_tokens": cached_tokens,
                 }
+                stopped = bool((payload.get("delta") or {}).get("stop_reason"))
                 yield {"type": "stop", "reason": (payload.get("delta") or {}).get("stop_reason")}
             elif event_type == "message_stop":
                 yield {"type": "end"}
