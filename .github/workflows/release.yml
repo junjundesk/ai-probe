@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e .
+      - run: python -m pip install nuitka zstandard ordered-set
+
+      - name: Build with Nuitka
+        shell: bash
+        run: >
+          python -m nuitka
+          --onefile
+          --standalone
+          --enable-plugin=tk-inter
+          --include-package=cryptography
+          --windows-console-mode=disable
+          --assume-yes-for-downloads
+          --remove-output
+          --output-dir=build
+          --output-filename=ai-probe.exe
+          --company-name="AI Probe"
+          --product-name="AI Probe"
+          --file-version=${GITHUB_REF_NAME#v}
+          --product-version=${GITHUB_REF_NAME#v}
+          app.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-probe-windows
+          path: build/ai-probe.exe
+
+  release:
+    needs: [build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ai-probe-windows
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ai-probe.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true
