@@ -1,3 +1,4 @@
+import json
 import unittest
 from io import BytesIO
 from unittest.mock import patch
@@ -347,6 +348,31 @@ class StreamUsageTests(unittest.TestCase):
 
 
 class StreamConversionTests(unittest.TestCase):
+    def test_responses_stream_exposes_reasoning_item_for_next_turn(self):
+        class ReasoningChatResponse:
+            def iter_lines(self, chunk_size=1):
+                yield b'data: {"id":"chatcmpl-test","model":"gpt-test","choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}'
+                yield b'data: {"id":"chatcmpl-test","model":"gpt-test","choices":[{"delta":{"content":"answer"},"finish_reason":null}]}'
+                yield b'data: {"id":"chatcmpl-test","model":"gpt-test","choices":[{"delta":{},"finish_reason":"stop"}]}'
+
+        renderer = _StreamRenderer("responses", "gpt-test")
+        chunks = []
+        for event in _canonical_stream_events(ReasoningChatResponse(), "chat", "gpt-test"):
+            chunks.extend(renderer.feed(event))
+        chunks.extend(renderer.finish())
+
+        payloads = []
+        for line in b"".join(chunks).decode("utf-8").splitlines():
+            if line.startswith("data:"):
+                payloads.append(json.loads(line[5:].strip()))
+        completed = next(payload for payload in payloads if payload.get("type") == "response.completed")
+        reasoning_item = completed["response"]["output"][0]
+        self.assertEqual(reasoning_item["type"], "reasoning")
+        self.assertEqual(reasoning_item["summary"][0]["text"], "think")
+
+        converted = _responses_to_chat({"model": "gpt-test", "input": [reasoning_item]})
+        self.assertEqual(converted["messages"][0]["reasoning_content"], "think")
+
     def test_chat_stream_skips_non_dict_payloads(self):
         class NullChunkResponse:
             def iter_lines(self, chunk_size=1):

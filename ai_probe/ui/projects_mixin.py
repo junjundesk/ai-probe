@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import uuid
 from tkinter import END, VERTICAL, Canvas, Listbox, StringVar, Text, Toplevel, messagebox, simpledialog, ttk
@@ -288,6 +289,7 @@ class ProjectsMixin:
                 self._on_project_selected()
         self.project_context_menu.entryconfigure(1, state=row_state)
         self.project_context_menu.entryconfigure(2, state=row_state)
+        self.project_context_menu.entryconfigure(3, state=row_state)
         try:
             self.project_context_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -318,6 +320,41 @@ class ProjectsMixin:
         self._save_store()
         self._refresh_project_list(load_form=False)
         self.status.set(f"项目已重命名：{name}")
+
+    def _copy_context_project(self):
+        project = self._project(self.context_project_id)
+        if not project:
+            return
+        self._commit_form()
+        project = self._project(self.context_project_id)
+        if not project:
+            return
+
+        duplicate = copy.deepcopy(project)
+        duplicate["id"] = uuid.uuid4().hex
+        base_name = f"{project['name']} 副本"
+        name = base_name
+        existing_names = {item["name"] for item in self.store["projects"]}
+        suffix = 2
+        while name in existing_names:
+            name = f"{base_name} {suffix}"
+            suffix += 1
+        duplicate["name"] = name
+
+        projects = self.store["projects"]
+        source_index = next(
+            (index for index, item in enumerate(projects) if item["id"] == project["id"]),
+            len(projects) - 1,
+        )
+        projects.insert(source_index + 1, duplicate)
+        self.current_id = duplicate["id"]
+        self.store["selected_project_id"] = duplicate["id"]
+        self.project_search.set("")
+        self.context_project_id = None
+        self._refresh_project_list()
+        self._save_store()
+        self.status.set(f"已复制项目：{duplicate['name']}")
+        self._log(f"复制项目：{project['name']} -> {duplicate['name']}")
 
     def _delete_context_project(self):
         if not self.context_project_id:

@@ -30,6 +30,10 @@ class _StreamRenderer:
         self.response_message_id = f"msg_{uuid.uuid4().hex}"
         self.response_text_started = False
         self.response_text_output_index = None
+        self.response_reasoning_id = f"rs_{uuid.uuid4().hex}"
+        self.response_reasoning_started = False
+        self.response_reasoning_output_index = None
+        self.response_reasoning_text = ""
         self.response_next_output_index = 0
         self.anthropic_text_index = None
         self.anthropic_reasoning_index = None
@@ -136,7 +140,43 @@ class _StreamRenderer:
                     )
                 )
             elif self.target_mode == "responses":
-                output.append(self._response_event("response.reasoning_summary_text.delta", delta=reasoning))
+                if not self.response_reasoning_started:
+                    self.response_reasoning_started = True
+                    self.response_reasoning_output_index = self.response_next_output_index
+                    self.response_next_output_index += 1
+                    item = {
+                        "id": self.response_reasoning_id,
+                        "type": "reasoning",
+                        "status": "in_progress",
+                        "summary": [],
+                    }
+                    part = {"type": "summary_text", "text": ""}
+                    output.extend(
+                        [
+                            self._response_event(
+                                "response.output_item.added",
+                                output_index=self.response_reasoning_output_index,
+                                item=item,
+                            ),
+                            self._response_event(
+                                "response.reasoning_summary_part.added",
+                                item_id=self.response_reasoning_id,
+                                output_index=self.response_reasoning_output_index,
+                                summary_index=0,
+                                part=part,
+                            ),
+                        ]
+                    )
+                self.response_reasoning_text += reasoning
+                output.append(
+                    self._response_event(
+                        "response.reasoning_summary_text.delta",
+                        item_id=self.response_reasoning_id,
+                        output_index=self.response_reasoning_output_index,
+                        summary_index=0,
+                        delta=reasoning,
+                    )
+                )
             else:
                 if self.anthropic_reasoning_index is None:
                     self.anthropic_reasoning_index = self.anthropic_next_index
@@ -380,6 +420,38 @@ class _StreamRenderer:
             output.extend([self._sse(chunk), b"data: [DONE]\n\n"])
         elif self.target_mode == "responses":
             response_output = []
+            if self.response_reasoning_started:
+                part = {"type": "summary_text", "text": self.response_reasoning_text}
+                item = {
+                    "id": self.response_reasoning_id,
+                    "type": "reasoning",
+                    "status": "completed",
+                    "summary": [part],
+                }
+                output.extend(
+                    [
+                        self._response_event(
+                            "response.reasoning_summary_text.done",
+                            item_id=self.response_reasoning_id,
+                            output_index=self.response_reasoning_output_index,
+                            summary_index=0,
+                            text=self.response_reasoning_text,
+                        ),
+                        self._response_event(
+                            "response.reasoning_summary_part.done",
+                            item_id=self.response_reasoning_id,
+                            output_index=self.response_reasoning_output_index,
+                            summary_index=0,
+                            part=part,
+                        ),
+                        self._response_event(
+                            "response.output_item.done",
+                            output_index=self.response_reasoning_output_index,
+                            item=item,
+                        ),
+                    ]
+                )
+                response_output.append(item)
             if self.response_text_started:
                 part = {"type": "output_text", "text": self.text, "annotations": []}
                 item = {

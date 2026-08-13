@@ -24,6 +24,7 @@ class LayoutMixin:
         self.project_context_menu = Menu(self.root, tearoff=False)
         self.project_context_menu.add_command(label="新增项目", command=self._new_project)
         self.project_context_menu.add_command(label="重命名项目", command=self._rename_context_project)
+        self.project_context_menu.add_command(label="复制项目", command=self._copy_context_project)
         self.project_context_menu.add_command(label="删除当前项目", command=self._delete_context_project)
         self.project_context_menu.add_separator()
         self.project_context_menu.add_command(label="删除全部项目", command=self._delete_all_projects)
