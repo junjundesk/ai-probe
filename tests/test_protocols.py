@@ -491,9 +491,10 @@ class RelayErrorLoggingTests(unittest.TestCase):
     def test_relay_logs_404_details_and_respects_switch(self):
         app = self.App({"projects": [], "relay": {"project_ids": []}})
         server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
-        with TemporaryDirectory() as temp_dir, patch(
-            "ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"
-        ) as log_path:
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl") as log_path,
+        ):
             server.start()
             try:
                 self.assertEqual(
@@ -515,9 +516,10 @@ class RelayErrorLoggingTests(unittest.TestCase):
     def test_relay_logs_400_response(self):
         app = self.App({"projects": [], "relay": {"project_ids": []}})
         server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
-        with TemporaryDirectory() as temp_dir, patch(
-            "ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"
-        ) as log_path:
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl") as log_path,
+        ):
             server.start()
             try:
                 self.assertEqual(self.post(server, {"input": "missing model"}), 400)
@@ -574,9 +576,11 @@ class RelayErrorLoggingTests(unittest.TestCase):
                 },
             ],
         }
-        with TemporaryDirectory() as temp_dir, patch(
-            "ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"
-        ) as log_path, patch("ai_probe.relay.requests.post", return_value=UpstreamResponse()) as upstream_post:
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl") as log_path,
+            patch("ai_probe.relay.requests.post", return_value=UpstreamResponse()) as upstream_post,
+        ):
             server.start()
             try:
                 self.assertEqual(self.post(server, payload), 502)

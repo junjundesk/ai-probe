@@ -47,9 +47,7 @@ def _sanitize_responses_input(body: dict) -> dict:
             and item.get("role") == "assistant"
             and isinstance(item.get("content"), list)
             and all(
-                isinstance(part, dict)
-                and part.get("type") == "output_text"
-                and part.get("text") == ""
+                isinstance(part, dict) and part.get("type") == "output_text" and part.get("text") == ""
                 for part in item["content"]
             )
         )
