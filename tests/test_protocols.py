@@ -1,6 +1,9 @@
 import json
 import unittest
+from http.client import HTTPConnection
 from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from ai_probe.protocols import (
@@ -460,6 +463,137 @@ class StreamConversionTests(unittest.TestCase):
         self.assertIn(b'"type": "response.completed"', stream)
         self.assertNotIn(b'"type": "error"', stream)
         log_exception.assert_called_once()
+
+
+class RelayErrorLoggingTests(unittest.TestCase):
+    class App:
+        def __init__(self, store):
+            self.store = store
+            self.messages = []
+
+        def _post(self, callback, *args):
+            callback(*args)
+
+        def _log(self, message):
+            self.messages.append(message)
+
+    @staticmethod
+    def post(server, payload, headers=None):
+        connection = HTTPConnection("127.0.0.1", server.port, timeout=3)
+        request_headers = {"Content-Type": "application/json", **(headers or {})}
+        connection.request("POST", "/v1/responses", json.dumps(payload), request_headers)
+        response = connection.getresponse()
+        response.read()
+        status = response.status
+        connection.close()
+        return status
+
+    def test_relay_logs_404_details_and_respects_switch(self):
+        app = self.App({"projects": [], "relay": {"project_ids": []}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
+        with TemporaryDirectory() as temp_dir, patch(
+            "ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"
+        ) as log_path:
+            server.start()
+            try:
+                self.assertEqual(
+                    self.post(server, {"model": "missing-model", "input": "hello"}, {"Authorization": "Bearer secret"}),
+                    404,
+                )
+                entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+                self.assertEqual(entry["status"], 404)
+                self.assertEqual(entry["path"], "/v1/responses")
+                self.assertEqual(entry["request_body"]["model"], "missing-model")
+                self.assertEqual(entry["request_headers"]["Authorization"], "[REDACTED]")
+
+                server.error_logging_enabled = False
+                self.assertEqual(self.post(server, {"model": "still-missing", "input": "hello"}), 404)
+                self.assertEqual(len(log_path.read_text(encoding="utf-8").splitlines()), 1)
+            finally:
+                server.stop()
+
+    def test_relay_logs_400_response(self):
+        app = self.App({"projects": [], "relay": {"project_ids": []}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
+        with TemporaryDirectory() as temp_dir, patch(
+            "ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"
+        ) as log_path:
+            server.start()
+            try:
+                self.assertEqual(self.post(server, {"input": "missing model"}), 400)
+            finally:
+                server.stop()
+
+            entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+            self.assertEqual(entry["status"], 400)
+
+    def test_relay_logs_502_upstream_attempt(self):
+        project = {
+            "id": "project-test",
+            "name": "test",
+            "base_url": "https://example.test/v1",
+            "api_key": "upstream-secret",
+            "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
+            "proxy_url": "",
+            "skip_ssl_verify": False,
+            "api_mode": "responses",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "gpt-test", "api_key_id": "key-test"}],
+        }
+        app = self.App({"projects": [project], "relay": {"project_ids": ["project-test"]}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
+
+        class UpstreamResponse:
+            ok = False
+            status_code = 404
+            headers = {"Content-Type": "application/json"}
+            reason = "Not Found"
+            text = '{"error":{"message":"upstream missing"}}'
+
+            def json(self):
+                return {"error": {"message": "upstream missing"}}
+
+            def close(self):
+                pass
+
+        payload = {
+            "model": "gpt-test",
+            "input": [
+                {"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "", "annotations": []}],
+                },
+                {"type": "function_call_output", "call_id": "call_1", "output": "found"},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "done", "annotations": []}],
+                },
+            ],
+        }
+        with TemporaryDirectory() as temp_dir, patch(
+            "ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"
+        ) as log_path, patch("ai_probe.relay.requests.post", return_value=UpstreamResponse()) as upstream_post:
+            server.start()
+            try:
+                self.assertEqual(self.post(server, payload), 502)
+            finally:
+                server.stop()
+
+            upstream_input = upstream_post.call_args.kwargs["json"]["input"]
+            self.assertEqual(
+                [item["type"] for item in upstream_input],
+                ["function_call", "function_call_output", "message"],
+            )
+            self.assertEqual(upstream_input[-1]["content"][0]["text"], "done")
+            entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+            self.assertEqual(entry["status"], 502)
+            self.assertEqual(entry["attempts"][0]["upstream_status"], 404)
+            self.assertEqual(entry["attempts"][0]["upstream_error"], "upstream missing")
+            self.assertEqual(entry["attempts"][0]["upstream_headers"]["Authorization"], "[REDACTED]")
 
 
 if __name__ == "__main__":

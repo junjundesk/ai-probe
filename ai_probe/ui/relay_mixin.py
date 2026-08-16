@@ -63,6 +63,12 @@ class RelayMixin:
         ttk.Label(settings, text="留空表示不校验访问密钥", style="Muted.TLabel").grid(
             row=2, column=1, columnspan=3, sticky="w", pady=(3, 0)
         )
+        ttk.Checkbutton(
+            settings,
+            text="记录中转非 200 详细日志（保存到 logs/）",
+            variable=self.relay_error_logging_enabled,
+            command=self._relay_error_logging_changed,
+        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(10, 0))
 
         projects_panel = ttk.Frame(config_tab, style="Panel.TFrame", padding=14)
         projects_panel.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
@@ -246,6 +252,13 @@ class RelayMixin:
             self.relay_server.auth_key = key
         self._save_store()
 
+    def _relay_error_logging_changed(self):
+        enabled = self.relay_error_logging_enabled.get()
+        self.store.setdefault("relay", {})["error_logging_enabled"] = enabled
+        if self.relay_server:
+            self.relay_server.error_logging_enabled = enabled
+        self._save_store()
+
     def _save_relay_config(self) -> bool:
         host = self.relay_host.get().strip() or "127.0.0.1"
         try:
@@ -262,6 +275,7 @@ class RelayMixin:
             "port": port,
             "api_key": self.relay_key.get().strip(),
             "project_ids": project_ids,
+            "error_logging_enabled": self.relay_error_logging_enabled.get(),
         }
         self.relay_host.set(host)
         self.relay_port.set(str(port))
@@ -286,7 +300,13 @@ class RelayMixin:
             messagebox.showinfo("本地中转", "启用的接口中还没有已添加模型", parent=self.relay_window)
             return
         try:
-            server = RelayServer(self, relay["host"], relay["port"], relay["api_key"])
+            server = RelayServer(
+                self,
+                relay["host"],
+                relay["port"],
+                relay["api_key"],
+                relay["error_logging_enabled"],
+            )
             server.start()
         except OSError as exc:
             messagebox.showerror(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import queue
-from tkinter import StringVar, Tk, ttk
+from tkinter import BooleanVar, StringVar, Tk, ttk
 
 from ..config import USAGE_FILE
 from ..usage import UsageStats
@@ -53,6 +53,7 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.base_url = StringVar()
         self.api_key = StringVar()
         self.proxy_url = StringVar()
+        self.skip_ssl_verify = BooleanVar(value=False)
         self.api_mode = StringVar(value="chat")
         self.headers_mode = StringVar(value="json")
         self.show_key = StringVar(value="0")
@@ -64,6 +65,7 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.relay_host = StringVar(value=str(relay.get("host", "127.0.0.1")))
         self.relay_port = StringVar(value=str(relay.get("port", 8040)))
         self.relay_key = StringVar(value=str(relay.get("api_key", "")))
+        self.relay_error_logging_enabled = BooleanVar(value=bool(relay.get("error_logging_enabled", True)))
         self.relay_status = StringVar(value="未启动")
         self.relay_url = StringVar(value="")
         self.relay_key.trace_add("write", self._relay_key_changed)
@@ -71,7 +73,14 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self._configure_window()
         self._build_ui()
         self.status.trace_add("write", self._update_status_style)
-        for variable in (self.project_name, self.base_url, self.api_key, self.proxy_url, self.api_mode):
+        for variable in (
+            self.project_name,
+            self.base_url,
+            self.api_key,
+            self.proxy_url,
+            self.skip_ssl_verify,
+            self.api_mode,
+        ):
             variable.trace_add("write", self._schedule_save)
         self._ensure_selection()
         self._refresh_project_list()

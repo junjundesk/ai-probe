@@ -33,14 +33,50 @@ from .protocols import (
 from .utils import _is_function_only_tools_error, error_message_from_response, extract_usage_tokens
 
 
+def _sanitize_responses_input(body: dict) -> dict:
+    """Drop content-less assistant items that break strict tool-call pairing."""
+    source = body.get("input")
+    if not isinstance(source, list):
+        return body
+    filtered = [
+        item
+        for item in source
+        if not (
+            isinstance(item, dict)
+            and item.get("type") == "message"
+            and item.get("role") == "assistant"
+            and isinstance(item.get("content"), list)
+            and all(
+                isinstance(part, dict)
+                and part.get("type") == "output_text"
+                and part.get("text") == ""
+                for part in item["content"]
+            )
+        )
+    ]
+    return body if len(filtered) == len(source) else {**body, "input": filtered}
+
+
 class RelayServer:
     """Small local OpenAI-compatible router backed by enabled projects."""
 
-    def __init__(self, app, host: str, port: int, auth_key: str = ""):
+    _SENSITIVE_LOG_KEYS = {
+        "api_key",
+        "authorization",
+        "cookie",
+        "password",
+        "proxy_authorization",
+        "secret",
+        "set_cookie",
+        "x_api_key",
+    }
+
+    def __init__(self, app, host: str, port: int, auth_key: str = "", error_logging_enabled: bool = True):
         self.app = app
         self.host = host
         self.port = port
         self.auth_key = auth_key.strip()
+        self.error_logging_enabled = bool(error_logging_enabled)
         self.httpd = None
         self.thread = None
         self._lock = threading.Lock()
@@ -68,6 +104,14 @@ class RelayServer:
                 self.wfile.write(raw)
 
             def _error(self, status: int, message: str, error_type: str = "invalid_request_error"):
+                if self.command == "POST" and status != 200:
+                    owner.log_error(
+                        "http_response",
+                        status=status,
+                        error_type=error_type,
+                        message=message,
+                        **getattr(self, "_relay_error_context", {}),
+                    )
                 if _request_mode(self.path.split("?", 1)[0]) == "anthropic":
                     return self._json(status, {"type": "error", "error": {"type": error_type, "message": message}})
                 return self._json(status, {"error": {"message": message, "type": error_type}})
@@ -105,6 +149,14 @@ class RelayServer:
 
             def do_POST(self):
                 request_id = uuid.uuid4().hex[:12]
+                incoming_path = self.path.split("?", 1)[0]
+                self._relay_error_context = {
+                    "request_id": request_id,
+                    "method": "POST",
+                    "path": self.path,
+                    "client": self.client_address[0],
+                    "request_headers": dict(self.headers.items()),
+                }
                 if not self._authorized():
                     return self._error(401, "本地中转密钥无效")
                 length = self.headers.get("Content-Length")
@@ -112,18 +164,38 @@ class RelayServer:
                     body = json.loads(self.rfile.read(int(length or 0)))
                 except (ValueError, TypeError, json.JSONDecodeError):
                     return self._error(400, "请求体必须是 JSON")
+                self._relay_error_context["request_body"] = body
                 if not isinstance(body, dict) or not body.get("model"):
                     return self._error(400, "请求体缺少 model")
                 model = str(body["model"])
                 routes = owner.model_routes().get(model, [])
                 if not routes:
+                    self._relay_error_context.update(
+                        model=model,
+                        available_models=sorted(owner.model_routes()),
+                    )
                     return self._error(404, f"未启用模型：{model}", "model_not_found")
-                incoming_path = self.path.split("?", 1)[0]
                 incoming_mode = _request_mode(incoming_path)
                 requested_stream = bool(body.get("stream"))
                 custom_tool_names = _custom_tool_names(body) if incoming_mode == "responses" else set()
+                attempts = []
+                self._relay_error_context.update(
+                    model=model,
+                    incoming_mode=incoming_mode,
+                    requested_stream=requested_stream,
+                    route_count=len(routes),
+                    attempts=attempts,
+                )
                 last_error = ""
                 for project in owner.ordered_routes(model, routes):
+                    attempt = {
+                        "project_id": project.get("id"),
+                        "project": project.get("name") or project.get("id") or "unknown",
+                        "base_url": project.get("base_url"),
+                        "proxy_url": project.get("proxy_url"),
+                        "skip_ssl_verify": bool(project.get("skip_ssl_verify", False)),
+                    }
+                    attempts.append(attempt)
                     try:
                         model_item = next(
                             (item for item in project.get("models", []) if str(item.get("id", "")).strip() == model),
@@ -147,6 +219,8 @@ class RelayServer:
                             upstream_body = _convert_request(body, incoming_mode, client.api_mode)
                         else:
                             upstream_body = body
+                        if client.api_mode == "responses":
+                            upstream_body = _sanitize_responses_input(upstream_body)
                         if converted:
                             upstream_body["stream"] = True
                         if upstream_body.get("stream"):
@@ -155,13 +229,25 @@ class RelayServer:
                         if not mode_converted and "?" in self.path:
                             path += "?" + self.path.split("?", 1)[1]
                         upstream_headers = owner.upstream_headers(client, self.headers, passthrough=not mode_converted)
+                        attempt.update(
+                            upstream_mode=client.api_mode,
+                            upstream_url=f"{client.base_url}{path}",
+                            converted=converted,
+                            upstream_headers=upstream_headers,
+                            upstream_body=upstream_body,
+                        )
                         response = requests.post(
                             f"{client.base_url}{path}",
                             headers=upstream_headers,
                             json=upstream_body,
                             timeout=(15, 300),
                             proxies=client.proxies,
+                            verify=client.verify_ssl,
                             stream=True,
+                        )
+                        attempt.update(
+                            upstream_status=response.status_code,
+                            upstream_response_headers=dict(response.headers),
                         )
                         if response.ok:
                             return owner.write_upstream(
@@ -177,6 +263,7 @@ class RelayServer:
                                 request_id,
                             )
                         error_text = error_message_from_response(response)
+                        attempt["upstream_error"] = error_text
                         response.close()
                         if (
                             incoming_mode == client.api_mode == "responses"
@@ -185,15 +272,24 @@ class RelayServer:
                         ):
                             with owner._lock:
                                 owner._responses_function_only.add(project.get("id"))
-                            compatible_body = _responses_custom_to_function(body)
+                            compatible_body = _sanitize_responses_input(_responses_custom_to_function(body))
                             compatible_body["stream"] = True
+                            compatibility_retry = {
+                                "upstream_body": compatible_body,
+                            }
+                            attempt["compatibility_retry"] = compatibility_retry
                             response = requests.post(
                                 f"{client.base_url}{path}",
                                 headers=upstream_headers,
                                 json=compatible_body,
                                 timeout=(15, 300),
                                 proxies=client.proxies,
+                                verify=client.verify_ssl,
                                 stream=True,
+                            )
+                            compatibility_retry.update(
+                                upstream_status=response.status_code,
+                                upstream_response_headers=dict(response.headers),
                             )
                             if response.ok:
                                 return owner.write_upstream(
@@ -209,10 +305,16 @@ class RelayServer:
                                     request_id,
                                 )
                             error_text = error_message_from_response(response)
+                            compatibility_retry["upstream_error"] = error_text
                             response.close()
                         last_error = f"HTTP {response.status_code}: {error_text}"
                     except Exception as exc:
                         last_error = str(exc)
+                        attempt.update(
+                            exception_type=type(exc).__name__,
+                            exception=str(exc),
+                            traceback="".join(traceback.format_exception(exc)),
+                        )
                         owner.log_exception(
                             "upstream_request",
                             exc,
@@ -224,6 +326,7 @@ class RelayServer:
                             model=model,
                             requested_stream=requested_stream,
                         )
+                self._relay_error_context["last_error"] = last_error
                 self._error(502, last_error or "所有上游接口均不可用", "upstream_error")
 
         self.httpd = ThreadingHTTPServer((self.host, self.port), Handler)
@@ -254,17 +357,54 @@ class RelayServer:
             )
         )
 
-    def log_exception(self, stage: str, exc: Exception, **context):
-        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
-        details = json.dumps(context, ensure_ascii=False, default=str)
-        entry = f"[{timestamp}] {stage}\ncontext={details}\n{''.join(traceback.format_exception(exc))}\n"
+    @classmethod
+    def _sanitize_log_value(cls, value, key: str = ""):
+        normalized_key = key.lower().replace("-", "_")
+        key_parts = set(normalized_key.split("_"))
+        if (
+            normalized_key in cls._SENSITIVE_LOG_KEYS
+            or normalized_key.startswith("api_key")
+            or normalized_key.endswith("_key")
+            or key_parts.intersection({"authorization", "cookie", "password", "secret", "token"})
+        ):
+            return "[REDACTED]"
+        if isinstance(value, dict):
+            return {
+                str(item_key): cls._sanitize_log_value(item_value, str(item_key))
+                for item_key, item_value in value.items()
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [cls._sanitize_log_value(item) for item in value]
+        if isinstance(value, str) and len(value) > 4000:
+            return f"{value[:4000]}...[truncated {len(value) - 4000} chars]"
+        return value
+
+    def log_error(self, stage: str, **details):
+        if not self.error_logging_enabled:
+            return
+        entry = {
+            "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "stage": stage,
+            **self._sanitize_log_value(details),
+        }
         try:
+            RELAY_ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
             with self._log_lock, RELAY_ERROR_LOG.open("a", encoding="utf-8") as log_file:
-                log_file.write(entry)
+                json.dump(entry, log_file, ensure_ascii=False, default=str)
+                log_file.write("\n")
         except OSError as log_exc:
             self.app._post(self.app._log, f"中转异常日志写入失败：{log_exc}")
             return
-        self.app._post(self.app._log, f"中转异常[{stage}]：{exc}；详情：{RELAY_ERROR_LOG}")
+        self.app._post(self.app._log, f"中转异常[{stage}]已记录：{RELAY_ERROR_LOG}")
+
+    def log_exception(self, stage: str, exc: Exception, **context):
+        self.log_error(
+            stage,
+            **context,
+            exception_type=type(exc).__name__,
+            exception=str(exc),
+            traceback="".join(traceback.format_exception(exc)),
+        )
 
     def model_routes(self) -> dict[str, list[dict]]:
         with self._lock:

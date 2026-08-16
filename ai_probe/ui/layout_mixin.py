@@ -160,9 +160,14 @@ class LayoutMixin:
             row=0, column=0, sticky="w", padx=(0, 8)
         )
         ttk.Entry(self.advanced_settings, textvariable=self.proxy_url).grid(row=0, column=1, columnspan=3, sticky="ew")
+        ttk.Checkbutton(
+            self.advanced_settings,
+            text="跳过 SSL 证书验证（不安全）",
+            variable=self.skip_ssl_verify,
+        ).grid(row=1, column=1, columnspan=3, sticky="w", pady=(7, 0))
 
         prompt_label = ttk.Frame(self.advanced_settings, style="Panel.TFrame")
-        prompt_label.grid(row=1, column=0, sticky="nw", padx=(0, 8), pady=(7, 0))
+        prompt_label.grid(row=2, column=0, sticky="nw", padx=(0, 8), pady=(7, 0))
         ttk.Label(prompt_label, text="测活内容", style="Panel.TLabel").pack(anchor="w")
         ttk.Label(
             prompt_label,
@@ -180,14 +185,14 @@ class LayoutMixin:
             highlightcolor="#087f6c",
             font=("Microsoft YaHei UI", 9),
         )
-        self.prompt_text.grid(row=1, column=1, columnspan=3, sticky="ew", pady=(7, 0))
+        self.prompt_text.grid(row=2, column=1, columnspan=3, sticky="ew", pady=(7, 0))
         self.prompt_text.bind("<<Modified>>", self._on_text_modified)
 
         ttk.Label(self.advanced_settings, text="自定义请求头", style="Panel.TLabel").grid(
-            row=2, column=0, sticky="nw", padx=(0, 8), pady=(7, 0)
+            row=3, column=0, sticky="nw", padx=(0, 8), pady=(7, 0)
         )
         header_editor = ttk.Frame(self.advanced_settings, style="Panel.TFrame")
-        header_editor.grid(row=2, column=1, columnspan=3, sticky="ew", pady=(7, 0))
+        header_editor.grid(row=3, column=1, columnspan=3, sticky="ew", pady=(7, 0))
         header_editor.grid_columnconfigure(0, weight=1)
 
         header_toolbar = ttk.Frame(header_editor, style="Panel.TFrame")

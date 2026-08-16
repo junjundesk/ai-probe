@@ -68,6 +68,7 @@ class ProjectsMixin:
         self.base_url.set(project["base_url"])
         self.api_key.set(project["api_key"])
         self.proxy_url.set(project.get("proxy_url", ""))
+        self.skip_ssl_verify.set(bool(project.get("skip_ssl_verify", False)))
         self.api_mode.set(project["api_mode"])
         self._set_text(self.prompt_text, project.get("test_prompt", ""))
         custom_headers = project.get("custom_headers", "")
@@ -243,6 +244,7 @@ class ProjectsMixin:
             project["api_keys"] = [{"id": "default", "name": "默认", "value": api_key_value}]
         _sync_project_keys(project)
         project["proxy_url"] = self.proxy_url.get().strip()
+        project["skip_ssl_verify"] = bool(self.skip_ssl_verify.get())
         project["api_mode"] = self.api_mode.get()
         project["test_prompt"] = self.prompt_text.get("1.0", "end-1c").strip()
         project["headers_mode"] = self.headers_mode.get()

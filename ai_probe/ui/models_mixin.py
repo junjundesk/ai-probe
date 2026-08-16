@@ -118,6 +118,7 @@ class ModelsMixin:
                     project.get("test_prompt", ""),
                     custom_headers,
                     project.get("proxy_url", ""),
+                    verify_ssl=not bool(project.get("skip_ssl_verify", False)),
                 )
             if not clients:
                 clients[""] = OpenAIClient(
@@ -127,6 +128,7 @@ class ModelsMixin:
                     project.get("test_prompt", ""),
                     custom_headers,
                     project.get("proxy_url", ""),
+                    verify_ssl=not bool(project.get("skip_ssl_verify", False)),
                 )
             return project["id"], clients
         except (ValueError, RuntimeError) as exc:

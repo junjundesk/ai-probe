@@ -14,6 +14,7 @@ ai_probe_config.key
 ai_probe_projects*.json
 ai_probe_usage*.json
 relay-error.log
+logs/
 
 # Local build artifacts and historical backups
 build/

@@ -29,6 +29,7 @@ class OpenAIClient:
         test_prompt: str = "",
         custom_headers: dict[str, str] | None = None,
         proxy_url: str = "",
+        verify_ssl: bool = True,
     ):
         if requests is None:
             raise RuntimeError("缺少 requests，请先运行：pip install -r requirements.txt")
@@ -39,6 +40,7 @@ class OpenAIClient:
         self.custom_headers = custom_headers or {}
         self.proxy_url = normalize_proxy_url(proxy_url)
         self.proxies = {"http": self.proxy_url, "https": self.proxy_url} if self.proxy_url else None
+        self.verify_ssl = bool(verify_ssl)
 
     @property
     def headers(self) -> dict[str, str]:
@@ -64,6 +66,7 @@ class OpenAIClient:
             headers=self.headers,
             timeout=(10, 30),
             proxies=self.proxies,
+            verify=self.verify_ssl,
         )
         if not response.ok:
             raise RuntimeError(f"HTTP {response.status_code}: {error_message_from_response(response)}")
@@ -124,6 +127,7 @@ class OpenAIClient:
                 stream=True,
                 timeout=(8, PROBE_TIMEOUT),
                 proxies=self.proxies,
+                verify=self.verify_ssl,
             ) as response:
                 if not response.ok:
                     raise RuntimeError(f"HTTP {response.status_code}: {error_message_from_response(response)}")

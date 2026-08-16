@@ -16,6 +16,7 @@ def new_project(name: str = "新项目") -> dict:
         "api_key": "",
         "api_keys": [],
         "proxy_url": "",
+        "skip_ssl_verify": False,
         "api_mode": "chat",
         "test_prompt": "",
         "headers_mode": "json",
@@ -105,4 +106,5 @@ def client_from_project(project: dict, api_key_id: str | None = None) -> OpenAIC
         project.get("test_prompt", ""),
         headers,
         project.get("proxy_url", ""),
+        verify_ssl=not bool(project.get("skip_ssl_verify", False)),
     )

@@ -21,7 +21,13 @@ from ..projects import _project_keys, _sync_project_keys, new_project, project_k
 
 class StoreMixin:
     def _default_store(self) -> dict:
-        relay_default = {"host": "127.0.0.1", "port": 8040, "api_key": "", "project_ids": []}
+        relay_default = {
+            "host": "127.0.0.1",
+            "port": 8040,
+            "api_key": "",
+            "project_ids": [],
+            "error_logging_enabled": True,
+        }
         return {
             "version": 2,
             "selected_project_id": None,
@@ -31,7 +37,13 @@ class StoreMixin:
 
     @staticmethod
     def _normalize_store(data: dict) -> dict:
-        relay_default = {"host": "127.0.0.1", "port": 8040, "api_key": "", "project_ids": []}
+        relay_default = {
+            "host": "127.0.0.1",
+            "port": 8040,
+            "api_key": "",
+            "project_ids": [],
+            "error_logging_enabled": True,
+        }
         if not isinstance(data, dict) or not isinstance(data.get("projects"), list):
             raise ValueError("配置文件缺少有效的 projects 列表")
         for project in data["projects"]:
@@ -43,6 +55,7 @@ class StoreMixin:
             project.setdefault("api_key", "")
             project.setdefault("api_keys", [])
             project.setdefault("proxy_url", "")
+            project.setdefault("skip_ssl_verify", False)
             project.setdefault("api_mode", "chat")
             project.setdefault("test_prompt", "")
             project.setdefault("headers_mode", "json")
@@ -94,6 +107,7 @@ class StoreMixin:
         relay["project_ids"] = [
             project_id for project_id in relay.get("project_ids", []) if isinstance(project_id, str)
         ]
+        relay["error_logging_enabled"] = bool(relay.get("error_logging_enabled", True))
         data["version"] = 2
         return data
 
