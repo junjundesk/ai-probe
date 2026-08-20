@@ -9,6 +9,7 @@ import traceback
 import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 try:
     import requests
@@ -32,6 +33,12 @@ from .protocols import (
 )
 from .utils import _is_function_only_tools_error, error_message_from_response, extract_usage_tokens
 
+_CALL_OUTPUT_TYPES = {
+    "function_call": "function_call_output",
+    "custom_tool_call": "custom_tool_call_output",
+    "local_shell_call": "local_shell_call_output",
+}
+
 
 def _sanitize_responses_input(body: dict) -> dict:
     """Drop content-less assistant items that break strict tool-call pairing."""
@@ -53,6 +60,171 @@ def _sanitize_responses_input(body: dict) -> dict:
         )
     ]
     return body if len(filtered) == len(source) else {**body, "input": filtered}
+
+def _reasoning_text_from_parts(parts) -> str:
+    if not isinstance(parts, list):
+        return ""
+    for part in parts:
+        if (
+            isinstance(part, dict)
+            and part.get("type") in {"reasoning_text", "summary_text"}
+            and isinstance(part.get("text"), str)
+            and part["text"].strip()
+        ):
+            return part["text"]
+    return ""
+
+def _summary_reasoning_item(item: dict) -> dict | None:
+    summary = item.get("summary")
+    content = item.get("content")
+    if _reasoning_text_from_parts(summary) and not content:
+        return item
+    text = _reasoning_text_from_parts(summary) or _reasoning_text_from_parts(content)
+    if not text:
+        return None
+    return {"type": "reasoning", "summary": [{"type": "summary_text", "text": text}]}
+
+def _normalize_web_search_call_item(item: dict) -> dict:
+    action = item.get("action")
+    if not isinstance(action, dict) or action.get("queries"):
+        return item
+    query = str(action.get("query", "") or "").strip()
+    if not query:
+        return item
+    return {
+        **item,
+        "action": {"type": action.get("type", "search"), "queries": [{"query": query}]},
+    }
+
+def _normalize_web_search_call_items(items: list) -> list:
+    return [
+        _normalize_web_search_call_item(item)
+        if isinstance(item, dict) and item.get("type") == "web_search_call"
+        else item
+        for item in items
+    ]
+
+def _deepseek_reasoning_item(item: dict) -> dict | None:
+    text = _reasoning_text_from_parts(item.get("content")) or _reasoning_text_from_parts(item.get("summary"))
+    if not text:
+        return None
+    normalized = dict(item)
+    if not isinstance(normalized.get("summary"), list):
+        normalized["summary"] = [{"type": "summary_text", "text": text}]
+    if normalized.get("content") and not normalized.get("encrypted_content"):
+        return {"type": "reasoning", "summary": [{"type": "summary_text", "text": text}]}
+    return normalized
+
+def _is_deepseek_responses_model(model: str) -> bool:
+    return "deepseek" in model.lower()
+
+def _deepseek_extra_call_reasoning(items: list) -> dict:
+    clones = {}
+    turn_reasoning = None
+    calls_in_turn = 0
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            turn_reasoning = None
+            calls_in_turn = 0
+            continue
+        item_type = item.get("type")
+        if item_type == "reasoning":
+            turn_reasoning = item
+            calls_in_turn = 0
+        elif item_type == "message" and item.get("role") == "assistant":
+            continue
+        elif item_type in _CALL_OUTPUT_TYPES:
+            if turn_reasoning and calls_in_turn > 0:
+                clones[index] = turn_reasoning
+            calls_in_turn += 1
+        else:
+            turn_reasoning = None
+            calls_in_turn = 0
+    return clones
+
+def _normalize_deepseek_tool_output_order(items: list) -> list:
+    clones = _deepseek_extra_call_reasoning(items)
+    consumed = set()
+    result = []
+    for index, item in enumerate(items):
+        if index in consumed:
+            continue
+        reasoning = clones.get(index)
+        if reasoning:
+            result.append(dict(reasoning))
+        result.append(item)
+        if not isinstance(item, dict):
+            continue
+        call_id = item.get("call_id") or item.get("id")
+        output_type = _CALL_OUTPUT_TYPES.get(item.get("type"))
+        if not call_id or not output_type:
+            continue
+        for next_index in range(index + 1, len(items)):
+            if next_index in consumed:
+                continue
+            candidate = items[next_index]
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("type") == output_type
+                and (candidate.get("call_id") or candidate.get("id")) == call_id
+            ):
+                result.append(candidate)
+                consumed.add(next_index)
+                break
+    return result
+
+def _normalize_deepseek_responses_input(body: dict) -> dict:
+    source = body.get("input")
+    if not isinstance(source, list):
+        return body
+    items = []
+    for item in source:
+        if isinstance(item, dict) and item.get("type") == "reasoning":
+            reasoning = _deepseek_reasoning_item(item)
+            if reasoning is not None:
+                items.append(reasoning)
+        else:
+            items.append(item)
+    items = _normalize_web_search_call_items(items)
+    ordered = _normalize_deepseek_tool_output_order(items)
+    stripped = [_without_server_item_id(item) for item in ordered]
+    return {**body, "input": stripped}
+
+def _without_server_item_id(item):
+    if (
+        isinstance(item, dict)
+        and isinstance(item.get("id"), str)
+        and item["id"].startswith(("rs_", "fc_", "resp_", "msg_"))
+    ):
+        return {key: value for key, value in item.items() if key != "id"}
+    return item
+
+def _normalize_summary_responses_input(body: dict) -> dict:
+    source = body.get("input")
+    if not isinstance(source, list):
+        return body
+    items = []
+    changed = False
+    for item in source:
+        if isinstance(item, dict) and item.get("type") == "reasoning":
+            reasoning = _summary_reasoning_item(item)
+            if reasoning is None:
+                changed = True
+                continue
+            changed = changed or reasoning is not item
+            items.append(reasoning)
+        else:
+            items.append(item)
+    items = _normalize_web_search_call_items(items)
+    if not changed and all(new is old for new, old in zip(items, source, strict=True)):
+        return body
+    return {**body, "input": items}
+
+def _prepare_responses_upstream_body(body: dict, model: str) -> dict:
+    prepared = _sanitize_responses_input(body)
+    if _is_deepseek_responses_model(model):
+        return _normalize_deepseek_responses_input(prepared)
+    return _normalize_summary_responses_input(prepared)
 
 
 class RelayServer:
@@ -218,7 +390,7 @@ class RelayServer:
                         else:
                             upstream_body = body
                         if client.api_mode == "responses":
-                            upstream_body = _sanitize_responses_input(upstream_body)
+                            upstream_body = _prepare_responses_upstream_body(upstream_body, model)
                         if converted:
                             upstream_body["stream"] = True
                         if upstream_body.get("stream"):
@@ -270,7 +442,7 @@ class RelayServer:
                         ):
                             with owner._lock:
                                 owner._responses_function_only.add(project.get("id"))
-                            compatible_body = _sanitize_responses_input(_responses_custom_to_function(body))
+                            compatible_body = _prepare_responses_upstream_body(_responses_custom_to_function(body), model)
                             compatible_body["stream"] = True
                             compatibility_retry = {
                                 "upstream_body": compatible_body,
@@ -327,6 +499,13 @@ class RelayServer:
                 self._relay_error_context["last_error"] = last_error
                 self._error(502, last_error or "所有上游接口均不可用", "upstream_error")
 
+        try:
+            RELAY_ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with self._log_lock:
+                self._prune_old_logs(self._current_log_path())
+        except OSError:
+            pass
+
         self.httpd = ThreadingHTTPServer((self.host, self.port), Handler)
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
@@ -377,6 +556,21 @@ class RelayServer:
             return f"{value[:4000]}...[truncated {len(value) - 4000} chars]"
         return value
 
+    @staticmethod
+    def _current_log_path() -> Path:
+        day = datetime.now().astimezone().strftime("%Y-%m-%d")
+        return RELAY_ERROR_LOG.with_name(f"relay-errors-{day}.jsonl")
+
+    @classmethod
+    def _prune_old_logs(cls, keep: Path) -> None:
+        for path in (*keep.parent.glob("relay-errors-*.jsonl"), RELAY_ERROR_LOG):
+            if path == keep:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
+
     def log_error(self, stage: str, **details):
         if not self.error_logging_enabled:
             return
@@ -386,14 +580,18 @@ class RelayServer:
             **self._sanitize_log_value(details),
         }
         try:
-            RELAY_ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
-            with self._log_lock, RELAY_ERROR_LOG.open("a", encoding="utf-8") as log_file:
-                json.dump(entry, log_file, ensure_ascii=False, default=str)
-                log_file.write("\n")
+            log_dir = RELAY_ERROR_LOG.parent
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = self._current_log_path()
+            with self._log_lock:
+                self._prune_old_logs(log_path)
+                with log_path.open("a", encoding="utf-8") as log_file:
+                    json.dump(entry, log_file, ensure_ascii=False, default=str)
+                    log_file.write("\n")
         except OSError as log_exc:
             self.app._post(self.app._log, f"中转异常日志写入失败：{log_exc}")
             return
-        self.app._post(self.app._log, f"中转异常[{stage}]已记录：{RELAY_ERROR_LOG}")
+        self.app._post(self.app._log, f"中转异常[{stage}]已记录：{log_path}")
 
     def log_exception(self, stage: str, exc: Exception, **context):
         self.log_error(
