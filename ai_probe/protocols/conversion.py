@@ -40,6 +40,19 @@ def _json_object(value) -> dict:
     return {}
 
 
+def _ensure_object_schema(schema) -> dict:
+    """Return a function-tool schema whose root type is object."""
+    if not isinstance(schema, dict):
+        return {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+    if schema.get("type") != "object":
+        schema = {**schema, "type": "object"}
+    return schema
+
+
 def _custom_tool_names(body: dict) -> set[str]:
     return {
         str(tool.get("name", ""))
@@ -51,19 +64,21 @@ def _custom_tool_names(body: dict) -> set[str]:
 def _custom_tool_parameters(tool: dict) -> dict:
     parameters = tool.get("parameters")
     if isinstance(parameters, dict):
-        return parameters
+        return _ensure_object_schema(parameters)
     tool_format = tool.get("format")
     if isinstance(tool_format, dict):
         if isinstance(tool_format.get("schema"), dict):
-            return tool_format["schema"]
+            return _ensure_object_schema(tool_format["schema"])
         if tool_format.get("type") == "json_schema" and isinstance(tool_format.get("json_schema"), dict):
-            return tool_format["json_schema"]
-    return {
-        "type": "object",
-        "properties": {"input": {"type": "string"}},
-        "required": ["input"],
-        "additionalProperties": False,
-    }
+            return _ensure_object_schema(tool_format["json_schema"])
+    return _ensure_object_schema(
+        {
+            "type": "object",
+            "properties": {"input": {"type": "string"}},
+            "required": ["input"],
+            "additionalProperties": False,
+        }
+    )
 
 
 def _responses_tool_to_chat(tool: dict) -> dict:
@@ -423,7 +438,10 @@ def _chat_to_anthropic(body: dict) -> dict:
     for tool in body.get("tools") or []:
         function = tool.get("function") if isinstance(tool, dict) else None
         if isinstance(function, dict):
-            converted = {"name": function.get("name", ""), "input_schema": function.get("parameters", {})}
+            converted = {
+                "name": function.get("name", ""),
+                "input_schema": _ensure_object_schema(function.get("parameters", {})),
+            }
             if "description" in function:
                 converted["description"] = function["description"]
             tools.append(converted)
@@ -540,7 +558,7 @@ def _chat_to_responses(body: dict) -> dict:
             converted = {
                 "type": "function",
                 "name": function.get("name", ""),
-                "parameters": function.get("parameters", {}),
+                "parameters": _ensure_object_schema(function.get("parameters", {})),
             }
             for key in ("description", "strict"):
                 if key in function:
@@ -796,7 +814,10 @@ def _anthropic_to_chat(body: dict) -> dict:
     tools = []
     for tool in body.get("tools") or []:
         if isinstance(tool, dict):
-            function = {"name": tool.get("name", ""), "parameters": tool.get("input_schema", {})}
+            function = {
+                "name": tool.get("name", ""),
+                "parameters": _ensure_object_schema(tool.get("input_schema", {})),
+            }
             if "description" in tool:
                 function["description"] = tool["description"]
             tools.append({"type": "function", "function": function})
