@@ -637,7 +637,8 @@ class StreamConversionTests(unittest.TestCase):
 
         stream = handler.wfile.getvalue()
         self.assertIn(b'"type": "response.completed"', stream)
-        self.assertNotIn(b'"type": "error"', stream)
+        self.assertIn(b'"type": "error"', stream)
+        self.assertIn(b'"status": "incomplete"', stream)
         log_exception.assert_called_once()
 
     def test_responses_passthrough_completes_after_disconnect_with_output(self):
@@ -682,6 +683,51 @@ class StreamConversionTests(unittest.TestCase):
         self.assertIn(b'"type":"response.output_text.delta"', stream)
         self.assertIn(b'"type": "response.completed"', stream)
         self.assertIn(b'"id": "resp-test"', stream)
+
+    def test_responses_passthrough_read_timeout_still_completes_stream(self):
+        class TimeoutResponse:
+            status_code = 200
+            headers = {}
+
+            def iter_content(self, chunk_size=8192):
+                raise RuntimeError("Read timed out. (read timeout=15)")
+
+            def close(self):
+                pass
+
+        class Handler:
+            def __init__(self):
+                self.wfile = BytesIO()
+                self.close_connection = False
+
+            def send_response(self, status):
+                pass
+
+            def send_header(self, name, value):
+                pass
+
+            def end_headers(self):
+                pass
+
+        class App:
+            def record_relay_usage(self, *args):
+                pass
+
+        handler = Handler()
+        RelayServer.passthrough_stream(App(), handler, TimeoutResponse(), "responses", {}, "gpt-test")
+
+        stream = handler.wfile.getvalue()
+        self.assertIn(b'"type": "error"', stream)
+        self.assertIn(b'"type": "response.completed"', stream)
+        self.assertIn(b"Read timed out", stream)
+
+    def test_responses_error_event_is_followed_by_completed(self):
+        renderer = _StreamRenderer("responses", "gpt-test")
+        chunks = renderer.feed({"type": "error", "message": "upstream failed"})
+
+        stream = b"".join(chunks)
+        self.assertIn(b'"type": "error"', stream)
+        self.assertIn(b'"type": "response.completed"', stream)
 
 
 class RelayErrorLoggingTests(unittest.TestCase):
@@ -831,6 +877,51 @@ class RelayErrorLoggingTests(unittest.TestCase):
             self.assertNotIn("upstream_headers", entry["attempts"][0])
             self.assertNotIn("upstream_body", entry["attempts"][0])
             self.assertNotIn("upstream_response_headers", entry["attempts"][0])
+
+    def test_relay_stream_502_ends_with_response_completed(self):
+        project = {
+            "id": "project-test",
+            "name": "test",
+            "base_url": "https://example.test/v1",
+            "api_key": "upstream-secret",
+            "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
+            "proxy_url": "",
+            "skip_ssl_verify": False,
+            "api_mode": "responses",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "gpt-test", "api_key_id": "key-test"}],
+        }
+        app = self.App({"projects": [project], "relay": {"project_ids": ["project-test"]}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"),
+            patch(
+                "ai_probe.relay.requests.post",
+                side_effect=RuntimeError("Read timed out. (read timeout=15)"),
+            ),
+        ):
+            server.start()
+            try:
+                connection = HTTPConnection("127.0.0.1", server.port, timeout=3)
+                connection.request(
+                    "POST",
+                    "/v1/responses",
+                    json.dumps({"model": "gpt-test", "input": "hello", "stream": True}),
+                    {"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                body = response.read().decode("utf-8")
+                status = response.status
+                connection.close()
+            finally:
+                server.stop()
+
+            self.assertEqual(status, 200)
+            self.assertIn("event: error", body)
+            self.assertIn("event: response.completed", body)
+            self.assertIn("Read timed out", body)
 
     def test_relay_log_keeps_only_current_day_file(self):
         app = self.App({"projects": [], "relay": {"project_ids": []}})

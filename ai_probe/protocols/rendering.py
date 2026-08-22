@@ -19,6 +19,7 @@ class _StreamRenderer:
         self.created = int(time.time())
         self.started = False
         self.finished = False
+        self.failure_message = ""
         self.has_output = False
         self.stop_reason = "stop"
         self.text = ""
@@ -393,13 +394,16 @@ class _StreamRenderer:
 
     def _error(self, message: str):
         self.finished = True
+        self.failure_message = message or "上游流式请求失败"
         if self.target_mode == "chat":
             return [self._sse({"error": {"message": message, "type": "upstream_error"}}), b"data: [DONE]\n\n"]
         payload = {"type": "error", "error": {"type": "api_error", "message": message}}
+        if self.target_mode == "responses":
+            return [self._sse(payload, "error")] + self.finish(force=True)
         return [self._sse(payload, "error")]
 
-    def finish(self):
-        if self.finished:
+    def finish(self, force: bool = False):
+        if self.finished and not force:
             return []
         self.finished = True
         output = self._ensure_started()
@@ -518,14 +522,24 @@ class _StreamRenderer:
                         ]
                     )
                 response_output.append(item)
-            incomplete = self.stop_reason in {"length", "max_tokens", "incomplete", "content_filter"}
+            incomplete = bool(self.failure_message) or self.stop_reason in {
+                "length",
+                "max_tokens",
+                "incomplete",
+                "content_filter",
+            }
             response = {
                 "id": self.id,
                 "object": "response",
                 "created_at": self.created,
                 "status": "incomplete" if incomplete else "completed",
                 "incomplete_details": {
-                    "reason": "content_filter" if self.stop_reason == "content_filter" else "max_output_tokens"
+                    "reason": "upstream_error"
+                    if self.failure_message
+                    else "content_filter"
+                    if self.stop_reason == "content_filter"
+                    else "max_output_tokens",
+                    "message": self.failure_message,
                 }
                 if incomplete
                 else None,

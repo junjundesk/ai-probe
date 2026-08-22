@@ -136,6 +136,7 @@ def _canonical_stream_events(response, api_mode: str, model: str, custom_tool_na
     custom_tool_names = custom_tool_names or set()
     started = False
     stopped = False
+    responses_completed = False
     event_name = ""
     tool_names = {}
     tool_indices = {}
@@ -163,6 +164,8 @@ def _canonical_stream_events(response, api_mode: str, model: str, custom_tool_na
             continue
         data = line[5:].strip()
         if data == "[DONE]":
+            if api_mode == "responses" and not responses_completed:
+                raise RuntimeError("上游 Responses 流在 response.completed 前结束")
             yield {"type": "end"}
             return
         try:
@@ -243,6 +246,7 @@ def _canonical_stream_events(response, api_mode: str, model: str, custom_tool_na
                     "arguments": payload.get("delta", ""),
                 }
             elif event_type == "response.completed":
+                responses_completed = True
                 if not started:
                     started = True
                     yield {
@@ -318,6 +322,8 @@ def _canonical_stream_events(response, api_mode: str, model: str, custom_tool_na
             elif event_type == "message_stop":
                 yield {"type": "end"}
                 return
+    if api_mode == "responses" and not responses_completed:
+        raise RuntimeError("上游 Responses 流在 response.completed 前结束")
     yield {"type": "end"}
 
 

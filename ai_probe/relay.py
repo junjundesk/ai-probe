@@ -40,6 +40,9 @@ _CALL_OUTPUT_TYPES = {
     "local_shell_call": "local_shell_call_output",
 }
 
+_UPSTREAM_STREAM_ATTEMPTS = 3
+_UPSTREAM_STREAM_BACKOFF = (0.25, 0.5)
+
 
 class _ResponsesStreamTracker:
     """Track enough Responses SSE state to terminate a truncated passthrough stream."""
@@ -53,6 +56,7 @@ class _ResponsesStreamTracker:
         self.started = False
         self.has_output = False
         self.completed = False
+        self.terminal = ""
 
     def feed(self, chunk: bytes):
         self.buffer.extend(chunk)
@@ -61,14 +65,17 @@ class _ResponsesStreamTracker:
             del self.buffer[: newline + 1]
             self._handle_line(line)
 
-    def completion(self) -> bytes | None:
-        if not self.started or not self.has_output or self.completed:
+    def completion(self, error: str | None = None) -> bytes | None:
+        if self.completed:
             return None
         response = {
             "id": self.id,
             "object": "response",
             "created_at": self.created_at,
-            "status": "completed",
+            "status": "incomplete" if error else "completed",
+            "incomplete_details": {"reason": "upstream_error", "message": error}
+            if error
+            else None,
             "model": self.model,
             "output": [],
             "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
@@ -79,7 +86,13 @@ class _ResponsesStreamTracker:
             "response": response,
         }
         self.completed = True
-        return f"event: response.completed\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+        chunks = []
+        if error:
+            chunks.append(
+                f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': error}}, ensure_ascii=False)}\n\n"
+            )
+        chunks.append(f"event: response.completed\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n")
+        return "".join(chunks).encode()
 
     def _handle_line(self, line: bytes):
         if not line.startswith(b"data:"):
@@ -102,7 +115,9 @@ class _ResponsesStreamTracker:
         self.has_output = self.has_output or event_type.startswith(
             ("response.output_", "response.reasoning_", "response.function_", "response.custom_")
         )
-        self.completed = self.completed or event_type == "response.completed"
+        if event_type in {"response.completed", "response.failed"}:
+            self.completed = True
+            self.terminal = event_type
 
 
 def _sanitize_responses_input(body: dict) -> dict:
@@ -375,9 +390,42 @@ class RelayServer:
                         message=message,
                         **getattr(self, "_relay_error_context", {}),
                     )
+                if (
+                    getattr(self, "_relay_error_context", {}).get("incoming_mode") == "responses"
+                    and getattr(self, "_relay_error_context", {}).get("requested_stream")
+                ):
+                    return self._stream_error(message, error_type)
                 if _request_mode(self.path.split("?", 1)[0]) == "anthropic":
                     return self._json(status, {"type": "error", "error": {"type": error_type, "message": message}})
                 return self._json(status, {"error": {"message": message, "type": error_type}})
+
+            def _stream_error(self, message: str, error_type: str):
+                model = self._relay_error_context.get("model") or ""
+                response = {
+                    "id": f"resp_{uuid.uuid4().hex}",
+                    "object": "response",
+                    "created_at": int(time.time()),
+                    "status": "failed",
+                    "model": model,
+                    "output": [],
+                }
+                chunks = [
+                    (
+                        f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'type': error_type, 'message': message}}, ensure_ascii=False)}\n\n"
+                    ),
+                    (
+                        f"event: response.completed\ndata: {json.dumps({'type': 'response.completed', 'response': response}, ensure_ascii=False)}\n\n"
+                    ),
+                ]
+                raw = "".join(chunks).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+                self.wfile.write(raw)
 
             def _authorized(self):
                 if not owner.auth_key:
@@ -497,14 +545,11 @@ class RelayServer:
                             upstream_url=f"{client.base_url}{path}",
                             converted=converted,
                         )
-                        response = requests.post(
+                        response = owner._post_upstream(
                             f"{client.base_url}{path}",
                             headers=upstream_headers,
-                            json=upstream_body,
-                            timeout=(15, 300),
-                            proxies=client.proxies,
-                            verify=client.verify_ssl,
-                            stream=True,
+                            body=upstream_body,
+                            client=client,
                         )
                         attempt.update(
                             upstream_status=response.status_code,
@@ -541,14 +586,11 @@ class RelayServer:
                                 "converted": True,
                             }
                             attempt["compatibility_retry"] = compatibility_retry
-                            response = requests.post(
+                            response = owner._post_upstream(
                                 f"{client.base_url}{path}",
                                 headers=upstream_headers,
-                                json=compatible_body,
-                                timeout=(15, 300),
-                                proxies=client.proxies,
-                                verify=client.verify_ssl,
-                                stream=True,
+                                body=compatible_body,
+                                client=client,
                             )
                             compatibility_retry.update(
                                 upstream_status=response.status_code,
@@ -613,6 +655,32 @@ class RelayServer:
                 "remote end closed connection",
             )
         )
+
+    @staticmethod
+    def _stream_failure_message(exc: Exception) -> str:
+        message = str(exc).strip()
+        return message or "上游流式连接中断"
+
+    def _post_upstream(self, url, *, headers, body, client, stream=True):
+        """Retry connection establishment, but never replay a partially delivered stream."""
+        last_exc = None
+        for attempt in range(_UPSTREAM_STREAM_ATTEMPTS):
+            try:
+                return requests.post(
+                    url,
+                    headers=headers,
+                    json=body,
+                    timeout=(15, 300),
+                    proxies=client.proxies,
+                    verify=client.verify_ssl,
+                    stream=stream,
+                )
+            except Exception as exc:
+                last_exc = exc
+                if attempt + 1 >= _UPSTREAM_STREAM_ATTEMPTS:
+                    raise
+                time.sleep(_UPSTREAM_STREAM_BACKOFF[min(attempt, len(_UPSTREAM_STREAM_BACKOFF) - 1)])
+        raise last_exc
 
     @classmethod
     def _sanitize_log_value(cls, value, key: str = "", depth: int = 0):
@@ -893,7 +961,7 @@ class RelayServer:
             app.record_relay_usage(project, model, input_tokens, output_tokens, cached_tokens)
 
     @staticmethod
-    def passthrough_stream(app, handler, response, upstream_mode, project, model):
+    def passthrough_stream(app, handler, response, upstream_mode, project, model, server=None):
         RelayServer._response_headers(handler, response, {"content-encoding", "transfer-encoding", "content-length"})
         collector = _SSEUsageCollector(upstream_mode)
         responses_tracker = _ResponsesStreamTracker(model) if upstream_mode == "responses" else None
@@ -911,11 +979,22 @@ class RelayServer:
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         except Exception as exc:
-            if not responses_tracker or not RelayServer._recoverable_stream_disconnect(exc):
+            if not responses_tracker:
                 raise
-            if completion := responses_tracker.completion():
-                handler.wfile.write(completion)
-                handler.wfile.flush()
+            if server is not None:
+                server.log_exception(
+                    "passthrough_stream",
+                    exc,
+                    upstream_mode=upstream_mode,
+                    model=model,
+                )
+            try:
+                completion = responses_tracker.completion(error=RelayServer._stream_failure_message(exc))
+                if completion:
+                    handler.wfile.write(completion)
+                    handler.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
         finally:
             collector.finish()
             response.close()
@@ -937,7 +1016,9 @@ class RelayServer:
     ):
         if not converted:
             if requested_stream:
-                RelayServer.passthrough_stream(self.app, handler, response, upstream_mode, project, model)
+                RelayServer.passthrough_stream(
+                    self.app, handler, response, upstream_mode, project, model, server=self
+                )
             else:
                 RelayServer.passthrough_json(self.app, handler, response, upstream_mode, project, model)
             return
@@ -1001,9 +1082,17 @@ class RelayServer:
                 request_id=request_id,
             )
             try:
-                if incoming_mode == "responses" and renderer.has_output and self._recoverable_stream_disconnect(exc):
-                    for chunk in renderer.finish():
-                        write_stream(chunk)
+                if incoming_mode == "responses":
+                    if not renderer.finished:
+                        failure_message = self._stream_failure_message(exc)
+                        renderer.failure_message = failure_message
+                        error = {
+                            "type": "error",
+                            "error": {"type": "api_error", "message": failure_message},
+                        }
+                        write_stream(f"event: error\ndata: {json.dumps(error, ensure_ascii=False)}\n\n".encode())
+                        for chunk in renderer.finish(force=True):
+                            write_stream(chunk)
                 else:
                     error = {"type": "error", "error": {"type": "api_error", "message": str(exc)}}
                     write_stream(f"event: error\ndata: {json.dumps(error, ensure_ascii=False)}\n\n".encode())
