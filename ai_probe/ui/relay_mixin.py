@@ -65,7 +65,7 @@ class RelayMixin:
         )
         ttk.Checkbutton(
             settings,
-            text="记录中转非 200 详细日志（保存到 logs/）",
+            text="记录中转非 200 精简复现日志（保存到 logs/）",
             variable=self.relay_error_logging_enabled,
             command=self._relay_error_logging_changed,
         ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(10, 0))
@@ -423,3 +423,4 @@ class RelayMixin:
         else:
             style = "Status.TLabel"
         self.status_label.configure(style=style)
+

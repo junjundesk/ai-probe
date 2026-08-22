@@ -380,7 +380,7 @@ class LayoutMixin:
         self.model_tree.heading("status", text="状态")
         self.model_tree.heading("first", text="首字延时")
         self.model_tree.heading("total", text="总耗时")
-        self.model_tree.heading("reply", text="响应 / 错误")
+        self.model_tree.heading("reply", text="错误")
         self.model_tree.column("#0", width=210, minwidth=130)
         self.model_tree.column("key", width=130, minwidth=90, anchor="w")
         self.model_tree.column("status", width=75, minwidth=65, anchor="center", stretch=False)
@@ -438,3 +438,4 @@ class LayoutMixin:
         self.log_text.configure(yscrollcommand=self.log_scroll.set)
         self.log_text.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(7, 0))
         self.log_scroll.grid(row=1, column=2, sticky="ns", pady=(7, 0))
+

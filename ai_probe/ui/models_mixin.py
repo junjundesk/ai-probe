@@ -91,7 +91,7 @@ class ModelsMixin:
         status = model.get("status", "未测试")
         first = self._format_ms(model.get("first_ms"))
         total = self._format_ms(model.get("total_ms"))
-        detail = (model.get("reply") or model.get("error") or "").replace("\n", " ")
+        detail = (model.get("error") or "").replace("\n", " ")
         key_label = api_key_label(project_key_for_model(self._project(), model))
         tag = {"可用": "ok", "不可用": "fail", "测试中": "testing"}.get(status, "unknown")
         self.model_tree.item(
@@ -660,8 +660,9 @@ class ModelsMixin:
         model = next((item for item in project["models"] if item["id"] == selected[0]), None)
         if not model:
             return
-        detail = model.get("reply") or model.get("error") or "无详细内容"
-        messagebox.showinfo(model["id"], detail)
+        detail = model.get("error")
+        if detail:
+            messagebox.showinfo(model["id"], detail)
 
     def _start_job(self, label: str, work):
         if self.busy:
@@ -731,3 +732,4 @@ class ModelsMixin:
             self.relay_server.stop()
             self.relay_server = None
         self.root.destroy()
+

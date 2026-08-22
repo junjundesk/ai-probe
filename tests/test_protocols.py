@@ -17,7 +17,7 @@ from ai_probe.protocols import (
     _responses_to_chat,
     _StreamRenderer,
 )
-from ai_probe.relay import RelayServer
+from ai_probe.relay import RelayServer, _prepare_responses_upstream_body
 
 
 class RequestModeTests(unittest.TestCase):
@@ -25,6 +25,147 @@ class RequestModeTests(unittest.TestCase):
         self.assertEqual(_request_mode("/v1/chat/completions"), "chat")
         self.assertEqual(_request_mode("/v1/responses"), "responses")
         self.assertEqual(_request_mode("/v1/messages"), "anthropic")
+
+
+class ResponsesInputNormalizationTests(unittest.TestCase):
+    def test_deepseek_summary_reasoning_keeps_summary_and_content(self):
+        body = {
+            "model": "deepseek-v4-pro",
+            "input": [
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "think hard"}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+            ],
+        }
+        result = _prepare_responses_upstream_body(body, "deepseek-v4-pro")
+        self.assertEqual(
+            result["input"][0],
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "think hard"}]},
+        )
+
+    def test_deepseek_drops_empty_reasoning_items(self):
+        body = {
+            "model": "deepseek-v4-pro",
+            "input": [
+                {"type": "reasoning", "summary": []},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+            ],
+        }
+        result = _prepare_responses_upstream_body(body, "deepseek-v4-pro")
+        self.assertEqual([item["type"] for item in result["input"]], ["message"])
+
+    def test_deepseek_parallel_calls_replay_reasoning_and_repair_order(self):
+        body = {
+            "model": "deepseek-v4-flash",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_think",
+                    "summary": [{"type": "summary_text", "text": "think"}],
+                    "content": [{"type": "reasoning_text", "text": "think"}],
+                    "encrypted_content": "enc-1",
+                },
+                {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "one", "arguments": "{}"},
+                {"type": "function_call", "id": "fc_2", "call_id": "call_2", "name": "two", "arguments": "{}"},
+                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "post tool"}]},
+                {"type": "function_call_output", "call_id": "call_1", "output": "one"},
+                {"type": "function_call_output", "call_id": "call_2", "output": "two"},
+            ],
+        }
+        result = _prepare_responses_upstream_body(body, "deepseek-v4-flash")
+        output = result["input"]
+        self.assertEqual(
+            [item["type"] for item in output],
+            [
+                "reasoning",
+                "function_call",
+                "function_call_output",
+                "reasoning",
+                "function_call",
+                "function_call_output",
+                "message",
+            ],
+        )
+        self.assertEqual(output[3]["content"][0]["text"], "think")
+        self.assertEqual(output[4]["call_id"], "call_2")
+        self.assertNotIn("id", output[0])
+        self.assertNotIn("id", output[1])
+        self.assertNotIn("id", output[3])
+        self.assertNotIn("id", output[5])
+        self.assertEqual(body["input"][0]["id"], "rs_think")
+        self.assertEqual(body["input"][1]["id"], "fc_1")
+        self.assertEqual(body["input"][-1]["call_id"], "call_2")
+
+    def test_non_deepseek_responses_input_stays_untouched(self):
+        body = {
+            "model": "gpt-5",
+            "input": [{"type": "reasoning", "summary": [{"type": "summary_text", "text": "keep"}]}],
+        }
+        result = _prepare_responses_upstream_body(body, "gpt-5")
+        self.assertIs(result, body)
+
+    def test_non_deepseek_reasoning_content_becomes_summary(self):
+        body = {
+            "model": "gpt-5.6-sol",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": "think"}],
+                },
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+            ],
+        }
+        result = _prepare_responses_upstream_body(body, "gpt-5.6-sol")
+        self.assertEqual(
+            result["input"][0],
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "think"}]},
+        )
+
+    def test_non_deepseek_responses_strips_server_item_ids(self):
+        body = {
+            "model": "gpt-5.6-sol",
+            "input": [
+                {"type": "message", "id": "msg_previous", "role": "user", "content": []},
+                {"type": "reasoning", "id": "rs_previous", "summary": []},
+                {"type": "function_call", "id": "fc_previous", "call_id": "call_keep", "name": "tool", "arguments": "{}"},
+                {"type": "custom_tool_call_output", "id": "ctco_previous", "call_id": "call_keep", "output": "ok"},
+            ],
+        }
+        result = _prepare_responses_upstream_body(body, "gpt-5.6-sol")
+        self.assertEqual([item["type"] for item in result["input"]], ["message", "function_call", "custom_tool_call_output"])
+        self.assertTrue(all("id" not in item for item in result["input"]))
+        self.assertEqual(result["input"][1]["call_id"], "call_keep")
+
+    def test_non_deepseek_web_search_call_gets_action_queries(self):
+        body = {
+            "model": "gpt-5.6-sol",
+            "input": [
+                {
+                    "type": "web_search_call",
+                    "id": "msg_ws_1",
+                    "status": "completed",
+                    "action": {"type": "search", "query": "test query"},
+                }
+            ],
+        }
+        result = _prepare_responses_upstream_body(body, "gpt-5.6-sol")
+        self.assertEqual(result["input"][0]["action"], {"type": "search", "queries": [{"query": "test query"}]})
+
+    def test_deepseek_web_search_call_gets_action_queries(self):
+        body = {
+            "model": "deepseek-v4-flash",
+            "input": [
+                {
+                    "type": "web_search_call",
+                    "id": "msg_ws_1",
+                    "status": "completed",
+                    "action": {"type": "search", "query": "test query"},
+                }
+            ],
+        }
+        result = _prepare_responses_upstream_body(body, "deepseek-v4-flash")
+        self.assertEqual(result["input"][0]["action"]["queries"], [{"query": "test query"}])
+
 
 
 class ConversionTests(unittest.TestCase):
@@ -162,6 +303,34 @@ class ConversionTests(unittest.TestCase):
             }
         )
         self.assertEqual(converted["tool_choice"], {"type": "function", "function": {"name": "lookup"}})
+
+    def test_responses_to_chat_normalizes_one_of_tool_schema(self):
+        converted = _responses_to_chat(
+            {
+                "model": "deepseek-test",
+                "input": "hi",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "automation_update",
+                        "parameters": {
+                            "$defs": {"__schema0": {"type": "string"}},
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {"id": {"$ref": "#/$defs/__schema0"}},
+                                    "required": ["id"],
+                                    "additionalProperties": False,
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        )
+        parameters = converted["tools"][0]["function"]["parameters"]
+        self.assertEqual(parameters["type"], "object")
+        self.assertEqual(parameters["oneOf"][0]["properties"]["id"]["$ref"], "#/$defs/__schema0")
 
     def test_responses_custom_to_function_drops_builtin_tools(self):
         converted = _responses_custom_to_function(
@@ -464,6 +633,49 @@ class StreamConversionTests(unittest.TestCase):
         self.assertNotIn(b'"type": "error"', stream)
         log_exception.assert_called_once()
 
+    def test_responses_passthrough_completes_after_disconnect_with_output(self):
+        class BrokenResponse:
+            status_code = 200
+            headers = {}
+
+            def iter_content(self, chunk_size=8192):
+                yield (
+                    b'event: response.created\n'
+                    b'data: {"type":"response.created","sequence_number":0,"response":{"id":"resp-test","model":"gpt-test","created_at":1}}\n\n'
+                    b'event: response.output_text.delta\n'
+                    b'data: {"type":"response.output_text.delta","sequence_number":1,"delta":"ok"}\n\n'
+                )
+                raise RuntimeError("stream closed")
+
+            def close(self):
+                pass
+
+        class Handler:
+            def __init__(self):
+                self.wfile = BytesIO()
+                self.close_connection = False
+
+            def send_response(self, status):
+                pass
+
+            def send_header(self, name, value):
+                pass
+
+            def end_headers(self):
+                pass
+
+        class App:
+            def record_relay_usage(self, *args):
+                pass
+
+        handler = Handler()
+        RelayServer.passthrough_stream(App(), handler, BrokenResponse(), "responses", {}, "gpt-test")
+
+        stream = handler.wfile.getvalue()
+        self.assertIn(b'"type":"response.output_text.delta"', stream)
+        self.assertIn(b'"type": "response.completed"', stream)
+        self.assertIn(b'"id": "resp-test"', stream)
+
 
 class RelayErrorLoggingTests(unittest.TestCase):
     class App:
@@ -493,19 +705,28 @@ class RelayErrorLoggingTests(unittest.TestCase):
         server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
         with (
             TemporaryDirectory() as temp_dir,
-            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl") as log_path,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"),
         ):
+            log_path = server._current_log_path()
             server.start()
             try:
                 self.assertEqual(
-                    self.post(server, {"model": "missing-model", "input": "hello"}, {"Authorization": "Bearer secret"}),
+                    self.post(
+                        server,
+                        {"model": "missing-model", "input": "hello", "instructions": "x" * 100_000},
+                        {"Authorization": "Bearer secret"},
+                    ),
                     404,
                 )
                 entry = json.loads(log_path.read_text(encoding="utf-8").strip())
                 self.assertEqual(entry["status"], 404)
                 self.assertEqual(entry["path"], "/v1/responses")
-                self.assertEqual(entry["request_body"]["model"], "missing-model")
-                self.assertEqual(entry["request_headers"]["Authorization"], "[REDACTED]")
+                self.assertEqual(entry["request"]["model"], "missing-model")
+                self.assertEqual(entry["request"]["input"], {"kind": "text", "chars": 5})
+                self.assertEqual(entry["request"]["instructions_chars"], 100_000)
+                self.assertNotIn("request_headers", entry)
+                self.assertNotIn("request_body", entry)
+                self.assertLess(log_path.stat().st_size, 4000)
 
                 server.error_logging_enabled = False
                 self.assertEqual(self.post(server, {"model": "still-missing", "input": "hello"}), 404)
@@ -518,8 +739,9 @@ class RelayErrorLoggingTests(unittest.TestCase):
         server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
         with (
             TemporaryDirectory() as temp_dir,
-            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl") as log_path,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"),
         ):
+            log_path = server._current_log_path()
             server.start()
             try:
                 self.assertEqual(self.post(server, {"input": "missing model"}), 400)
@@ -578,9 +800,10 @@ class RelayErrorLoggingTests(unittest.TestCase):
         }
         with (
             TemporaryDirectory() as temp_dir,
-            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl") as log_path,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"),
             patch("ai_probe.relay.requests.post", return_value=UpstreamResponse()) as upstream_post,
         ):
+            log_path = server._current_log_path()
             server.start()
             try:
                 self.assertEqual(self.post(server, payload), 502)
@@ -597,8 +820,35 @@ class RelayErrorLoggingTests(unittest.TestCase):
             self.assertEqual(entry["status"], 502)
             self.assertEqual(entry["attempts"][0]["upstream_status"], 404)
             self.assertEqual(entry["attempts"][0]["upstream_error"], "upstream missing")
-            self.assertEqual(entry["attempts"][0]["upstream_headers"]["Authorization"], "[REDACTED]")
+            self.assertEqual(entry["attempts"][0]["upstream_trace"], {"content-type": "application/json"})
+            self.assertNotIn("upstream_headers", entry["attempts"][0])
+            self.assertNotIn("upstream_body", entry["attempts"][0])
+            self.assertNotIn("upstream_response_headers", entry["attempts"][0])
+
+    def test_relay_log_keeps_only_current_day_file(self):
+        app = self.App({"projects": [], "relay": {"project_ids": []}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"),
+        ):
+            stale_path = Path(temp_dir) / "relay-errors-2000-01-01.jsonl"
+            stale_path.write_text('{"stale": true}\n', encoding="utf-8")
+            legacy_path = Path(temp_dir) / "relay-errors.jsonl"
+            legacy_path.write_text('{"legacy": true}\n', encoding="utf-8")
+            log_path = server._current_log_path()
+            log_path.write_text('{"kept": true}\n', encoding="utf-8")
+
+            server.log_error("test", status=503, message="boom")
+
+            self.assertFalse(stale_path.exists())
+            self.assertFalse(legacy_path.exists())
+            self.assertTrue(log_path.exists())
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(json.loads(lines[1])["status"], 503)
 
 
 if __name__ == "__main__":
     unittest.main()
+
