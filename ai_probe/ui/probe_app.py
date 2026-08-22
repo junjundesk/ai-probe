@@ -6,6 +6,7 @@ import queue
 from tkinter import BooleanVar, StringVar, Tk, ttk
 
 from ..config import USAGE_FILE
+from ..edit_context import install_edit_context_menu
 from ..usage import UsageStats
 from .layout_mixin import LayoutMixin
 from .models_mixin import ModelsMixin
@@ -18,6 +19,7 @@ from .widgets import MacButton
 class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
     def __init__(self, root: Tk, config_key: bytes):
         self.root = root
+        install_edit_context_menu(root)
         self.events = queue.Queue()
         self.config_key = config_key
         self.store = self._load_store()

@@ -11,6 +11,7 @@ except ImportError:
     requests = None
 
 from .config import load_or_create_config_key
+from .edit_context import install_edit_context_menu
 from .ui import ProbeApp
 
 
@@ -21,6 +22,7 @@ def main() -> None:
         self_test()
         return
     root = Tk()
+    install_edit_context_menu(root)
     root.withdraw()
     if requests is None:
         messagebox.showerror("缺少依赖", "请先运行：pip install -r requirements.txt")
