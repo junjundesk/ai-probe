@@ -126,6 +126,7 @@ def _sanitize_responses_input(body: dict) -> dict:
     ]
     return body if len(filtered) == len(source) else {**body, "input": filtered}
 
+
 def _reasoning_text_from_parts(parts) -> str:
     if not isinstance(parts, list):
         return ""
@@ -139,6 +140,7 @@ def _reasoning_text_from_parts(parts) -> str:
             return part["text"]
     return ""
 
+
 def _summary_reasoning_item(item: dict) -> dict | None:
     summary = item.get("summary")
     content = item.get("content")
@@ -148,6 +150,7 @@ def _summary_reasoning_item(item: dict) -> dict | None:
     if not text:
         return None
     return {"type": "reasoning", "summary": [{"type": "summary_text", "text": text}]}
+
 
 def _normalize_web_search_call_item(item: dict) -> dict:
     action = item.get("action")
@@ -161,6 +164,7 @@ def _normalize_web_search_call_item(item: dict) -> dict:
         "action": {"type": action.get("type", "search"), "queries": [{"query": query}]},
     }
 
+
 def _normalize_web_search_call_items(items: list) -> list:
     return [
         _normalize_web_search_call_item(item)
@@ -168,6 +172,7 @@ def _normalize_web_search_call_items(items: list) -> list:
         else item
         for item in items
     ]
+
 
 def _deepseek_reasoning_item(item: dict) -> dict | None:
     text = _reasoning_text_from_parts(item.get("content")) or _reasoning_text_from_parts(item.get("summary"))
@@ -180,8 +185,10 @@ def _deepseek_reasoning_item(item: dict) -> dict | None:
         return {"type": "reasoning", "summary": [{"type": "summary_text", "text": text}]}
     return normalized
 
+
 def _is_deepseek_responses_model(model: str) -> bool:
     return "deepseek" in model.lower()
+
 
 def _deepseek_extra_call_reasoning(items: list) -> dict:
     clones = {}
@@ -206,6 +213,7 @@ def _deepseek_extra_call_reasoning(items: list) -> dict:
             turn_reasoning = None
             calls_in_turn = 0
     return clones
+
 
 def _normalize_deepseek_tool_output_order(items: list) -> list:
     clones = _deepseek_extra_call_reasoning(items)
@@ -238,6 +246,7 @@ def _normalize_deepseek_tool_output_order(items: list) -> list:
                 break
     return result
 
+
 def _normalize_deepseek_responses_input(body: dict) -> dict:
     source = body.get("input")
     if not isinstance(source, list):
@@ -255,6 +264,7 @@ def _normalize_deepseek_responses_input(body: dict) -> dict:
     stripped = [_without_server_item_id(item) for item in ordered]
     return {**body, "input": stripped}
 
+
 def _without_server_item_id(item):
     if (
         isinstance(item, dict)
@@ -263,6 +273,7 @@ def _without_server_item_id(item):
     ):
         return {key: value for key, value in item.items() if key != "id"}
     return item
+
 
 def _normalize_summary_responses_input(body: dict) -> dict:
     source = body.get("input")
@@ -286,6 +297,7 @@ def _normalize_summary_responses_input(body: dict) -> dict:
     if not changed and all(new is old for new, old in zip(items, source, strict=True)):
         return body
     return {**body, "input": items}
+
 
 def _prepare_responses_upstream_body(body: dict, model: str) -> dict:
     prepared = _sanitize_responses_input(body)
@@ -521,7 +533,9 @@ class RelayServer:
                         ):
                             with owner._lock:
                                 owner._responses_function_only.add(project.get("id"))
-                            compatible_body = _prepare_responses_upstream_body(_responses_custom_to_function(body), model)
+                            compatible_body = _prepare_responses_upstream_body(
+                                _responses_custom_to_function(body), model
+                            )
                             compatible_body["stream"] = True
                             compatibility_retry = {
                                 "converted": True,
@@ -675,9 +689,7 @@ class RelayServer:
                 if isinstance(content, list):
                     for part in content:
                         part_type = (
-                            str(part.get("type") or "unknown")[:80]
-                            if isinstance(part, dict)
-                            else type(part).__name__
+                            str(part.get("type") or "unknown")[:80] if isinstance(part, dict) else type(part).__name__
                         )
                         content_types[part_type] = content_types.get(part_type, 0) + 1
             types[item_type] = types.get(item_type, 0) + 1

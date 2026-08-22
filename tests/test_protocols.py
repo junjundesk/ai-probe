@@ -127,12 +127,20 @@ class ResponsesInputNormalizationTests(unittest.TestCase):
             "input": [
                 {"type": "message", "id": "msg_previous", "role": "user", "content": []},
                 {"type": "reasoning", "id": "rs_previous", "summary": []},
-                {"type": "function_call", "id": "fc_previous", "call_id": "call_keep", "name": "tool", "arguments": "{}"},
+                {
+                    "type": "function_call",
+                    "id": "fc_previous",
+                    "call_id": "call_keep",
+                    "name": "tool",
+                    "arguments": "{}",
+                },
                 {"type": "custom_tool_call_output", "id": "ctco_previous", "call_id": "call_keep", "output": "ok"},
             ],
         }
         result = _prepare_responses_upstream_body(body, "gpt-5.6-sol")
-        self.assertEqual([item["type"] for item in result["input"]], ["message", "function_call", "custom_tool_call_output"])
+        self.assertEqual(
+            [item["type"] for item in result["input"]], ["message", "function_call", "custom_tool_call_output"]
+        )
         self.assertTrue(all("id" not in item for item in result["input"]))
         self.assertEqual(result["input"][1]["call_id"], "call_keep")
 
@@ -165,7 +173,6 @@ class ResponsesInputNormalizationTests(unittest.TestCase):
         }
         result = _prepare_responses_upstream_body(body, "deepseek-v4-flash")
         self.assertEqual(result["input"][0]["action"]["queries"], [{"query": "test query"}])
-
 
 
 class ConversionTests(unittest.TestCase):
@@ -640,9 +647,9 @@ class StreamConversionTests(unittest.TestCase):
 
             def iter_content(self, chunk_size=8192):
                 yield (
-                    b'event: response.created\n'
+                    b"event: response.created\n"
                     b'data: {"type":"response.created","sequence_number":0,"response":{"id":"resp-test","model":"gpt-test","created_at":1}}\n\n'
-                    b'event: response.output_text.delta\n'
+                    b"event: response.output_text.delta\n"
                     b'data: {"type":"response.output_text.delta","sequence_number":1,"delta":"ok"}\n\n'
                 )
                 raise RuntimeError("stream closed")
