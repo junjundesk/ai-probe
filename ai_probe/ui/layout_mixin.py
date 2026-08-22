@@ -438,4 +438,3 @@ class LayoutMixin:
         self.log_text.configure(yscrollcommand=self.log_scroll.set)
         self.log_text.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(7, 0))
         self.log_scroll.grid(row=1, column=2, sticky="ns", pady=(7, 0))
-

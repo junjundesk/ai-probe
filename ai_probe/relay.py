@@ -1018,4 +1018,3 @@ class RelayServer:
                 renderer.output_tokens,
                 renderer.cached_tokens,
             )
-

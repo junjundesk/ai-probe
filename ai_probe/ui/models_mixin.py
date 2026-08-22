@@ -732,4 +732,3 @@ class ModelsMixin:
             self.relay_server.stop()
             self.relay_server = None
         self.root.destroy()
-

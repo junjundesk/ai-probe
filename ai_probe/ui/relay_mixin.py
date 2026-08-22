@@ -423,4 +423,3 @@ class RelayMixin:
         else:
             style = "Status.TLabel"
         self.status_label.configure(style=style)
-
