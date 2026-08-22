@@ -98,6 +98,7 @@ def self_test():
 
         def iter_lines(self, decode_unicode=True):
             yield "data: " + json.dumps({"choices": [{"delta": {"content": "现"}}]})
+            yield "data: " + json.dumps({"choices": [{"delta": {"content": "在几点"}}]})
             self.on_done()
             yield "data: [DONE]"
 
@@ -135,8 +136,8 @@ def self_test():
     client_module.requests = FakeProbeRequests()
     try:
         probe_result = probe_client.probe("fake-model")
-        assert probe_result["ok"] and probe_result["reply"] == "可用（首 token 已返回）"
-        assert not client_module.requests.reached_done
+        assert probe_result["ok"] and probe_result["reply"] == "现在几点"
+        assert client_module.requests.reached_done
         error_result = probe_client.probe("fake-error")
         assert not error_result["ok"] and "upstream error" in error_result["error"]
     finally:

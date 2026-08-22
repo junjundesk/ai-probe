@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
@@ -96,6 +97,69 @@ def normalize_proxy_url(value: str) -> str:
     except ValueError as exc:
         raise ValueError("代理端口无效") from exc
     return urlunsplit((parsed.scheme.lower(), parsed.netloc, "", "", ""))
+
+
+_CHANNEL_URL_RE = re.compile(r"https?://[^\s<>\"'`\])}]+", re.IGNORECASE)
+
+
+def parse_channel_import(value: str) -> list[dict[str, str]]:
+    """Parse channel snippets pasted as JSON, Markdown, or URL/key lines."""
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("请输入渠道 JSON，或按 URL、密钥分行粘贴")
+
+    def from_mapping(item) -> dict[str, str] | None:
+        if not isinstance(item, dict):
+            return None
+        lowered = {str(key).strip().lower(): item[key] for key in item}
+        url = next((lowered[name] for name in ("url", "base_url", "api_url", "endpoint") if name in lowered), None)
+        key = next(
+            (lowered[name] for name in ("key", "api_key", "apikey", "token", "secret") if name in lowered),
+            None,
+        )
+        if url is None and key is None:
+            return None
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("渠道 JSON 缺少有效的 url")
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("渠道 JSON 缺少有效的 key")
+        url_match = _CHANNEL_URL_RE.search(url)
+        channel = {"url": normalize_base_url(url_match.group(0) if url_match else url), "key": key.strip()}
+        channel_type = item.get("_type")
+        if channel_type is not None and str(channel_type).strip():
+            channel["_type"] = str(channel_type).strip()
+        return channel
+
+    try:
+        payload = json.loads(text.replace(r"\_", "_"))
+    except json.JSONDecodeError:
+        payload = None
+    if payload is not None:
+        items = payload if isinstance(payload, list) else [payload]
+        channels = [channel for item in items if (channel := from_mapping(item))]
+        if channels:
+            return channels
+        raise ValueError("JSON 中未找到同时包含 url 和 key 的渠道")
+
+    urls: list[str] = []
+    keys: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("#", "//")):
+            continue
+        found_urls = [match.rstrip(".,;:!?，。；：！？") for match in _CHANNEL_URL_RE.findall(line)]
+        urls.extend(dict.fromkeys(found_urls))
+        if found_urls:
+            continue
+        if " " not in line and not line.startswith(("_", "{")) and not _CHANNEL_URL_RE.fullmatch(line):
+            keys.append(line.strip("`'\""))
+
+    # Pair in appearance order. This covers both URL-then-key and key-then-URL pastes.
+    if not urls or not keys:
+        raise ValueError("未识别到完整渠道，请粘贴 URL 和 API 密钥")
+    if len(urls) != len(keys):
+        raise ValueError(f"识别到 {len(urls)} 个 URL 和 {len(keys)} 个密钥，数量不匹配")
+    return [{"url": normalize_base_url(url), "key": key} for url, key in zip(urls, keys, strict=True)]
 
 
 def parse_custom_headers(value: str) -> dict[str, str]:

@@ -6,6 +6,7 @@ import copy
 import json
 import uuid
 from tkinter import END, VERTICAL, Canvas, Listbox, StringVar, Text, Toplevel, messagebox, simpledialog, ttk
+from urllib.parse import urlsplit
 
 from ..config import QUICK_USER_AGENT
 from ..projects import (
@@ -15,7 +16,7 @@ from ..projects import (
     new_project,
     project_key_for_model,
 )
-from ..utils import parse_custom_headers, parse_manual_headers
+from ..utils import parse_channel_import, parse_custom_headers, parse_manual_headers
 
 
 class ProjectsMixin:
@@ -394,6 +395,103 @@ class ProjectsMixin:
         self.project_search.set("")
         self._refresh_project_list()
         self._save_store()
+
+    def _import_channels(self):
+        window = Toplevel(self.root)
+        window.title("渠道导入")
+        window.geometry("680x420")
+        window.minsize(560, 340)
+        window.configure(bg="#f2f2f7")
+        window.transient(self.root)
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(1, weight=1)
+
+        header = ttk.Frame(window, style="Toolbar.TFrame", padding=(16, 12))
+        header.grid(row=0, column=0, sticky="ew")
+        ttk.Label(header, text="渠道导入", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text="支持 newapi_channel_conn JSON、Markdown 链接，或 URL 与密钥分行粘贴",
+            style="ToolbarMuted.TLabel",
+        ).pack(anchor="w", pady=(4, 0))
+
+        body = ttk.Frame(window, style="Panel.TFrame", padding=14)
+        body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(10, 8))
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+        editor = Text(
+            body,
+            wrap="word",
+            font=("Consolas", 10),
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#d6d6dc",
+            padx=10,
+            pady=9,
+            undo=True,
+        )
+        editor.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(body, orient=VERTICAL, command=editor.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        editor.configure(yscrollcommand=scrollbar.set)
+
+        footer = ttk.Frame(window, style="Panel.TFrame", padding=14)
+        footer.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
+        footer.grid_columnconfigure(0, weight=1)
+
+        def import_now():
+            try:
+                channels = parse_channel_import(editor.get("1.0", "end-1c"))
+            except ValueError as exc:
+                messagebox.showerror("渠道导入失败", str(exc), parent=window)
+                return
+
+            self._commit_form()
+            existing = {
+                (str(project.get("base_url", "")).rstrip("/"), str(project.get("api_key", "")).strip())
+                for project in self.store["projects"]
+            }
+            existing_names = {project["name"] for project in self.store["projects"]}
+            imported = []
+            for channel in channels:
+                signature = (channel["url"].rstrip("/"), channel["key"])
+                if signature in existing:
+                    continue
+                host = urlsplit(channel["url"]).hostname or "导入渠道"
+                name = host
+                suffix = 2
+                while name in existing_names:
+                    name = f"{host} {suffix}"
+                    suffix += 1
+                project = new_project(name)
+                project["base_url"] = channel["url"]
+                project["api_key"] = channel["key"]
+                project["api_keys"] = [{"id": "default", "name": "默认", "value": channel["key"]}]
+                if channel.get("_type"):
+                    project["channel_type"] = channel["_type"]
+                self.store["projects"].append(project)
+                existing.add(signature)
+                existing_names.add(name)
+                imported.append(project)
+
+            if not imported:
+                messagebox.showinfo("渠道导入", "识别到的渠道均已存在，无需重复导入。", parent=window)
+                return
+            self.current_id = imported[0]["id"]
+            self.store["selected_project_id"] = self.current_id
+            self.project_search.set("")
+            self._refresh_project_list()
+            self._save_store()
+            self.status.set(f"渠道导入完成：新增 {len(imported)} 个")
+            self._log(f"渠道导入：新增 {len(imported)} 个，跳过 {len(channels) - len(imported)} 个")
+            window.destroy()
+
+        self._mac_button(footer, "智能识别并导入", import_now, kind="primary", surface="#ffffff").grid(
+            row=0, column=1, padx=(8, 0)
+        )
+        self._mac_button(footer, "取消", window.destroy, surface="#ffffff").grid(row=0, column=2, padx=(8, 0))
+        editor.focus_set()
+        window.grab_set()
 
     def _delete_project(self):
         project = self._project()

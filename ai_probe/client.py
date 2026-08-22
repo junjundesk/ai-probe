@@ -19,6 +19,8 @@ from .utils import (
     utc_timestamp,
 )
 
+_MAX_PROBE_REPLY_CHARS = 2000
+
 
 class OpenAIClient:
     def __init__(
@@ -116,7 +118,8 @@ class OpenAIClient:
         started = time.perf_counter()
         first_event_ms = None
         first_token_ms = None
-        probe_reply = ""
+        probe_reply_parts = []
+        probe_reply_length = 0
         event_name = ""
 
         try:
@@ -169,11 +172,16 @@ class OpenAIClient:
                     if text:
                         if first_token_ms is None:
                             first_token_ms = elapsed_ms
-                        probe_reply = "可用（首 token 已返回）"
-                        # 测活只验证可用性，收到首个有效 token 即结束流式读取。
-                        break
+                        remaining = _MAX_PROBE_REPLY_CHARS - probe_reply_length
+                        if remaining > 0:
+                            part = text[:remaining]
+                            probe_reply_parts.append(part)
+                            probe_reply_length += len(part)
+                        if probe_reply_length >= _MAX_PROBE_REPLY_CHARS:
+                            break
 
             total_ms = round((time.perf_counter() - started) * 1000)
+            probe_reply = "".join(probe_reply_parts)
             return {
                 "ok": True,
                 "status": "可用",

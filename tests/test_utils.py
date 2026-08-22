@@ -6,6 +6,7 @@ from ai_probe.utils import (
     format_cache_summary,
     normalize_base_url,
     normalize_proxy_url,
+    parse_channel_import,
     parse_custom_headers,
 )
 
@@ -82,6 +83,46 @@ class CustomHeaderTests(unittest.TestCase):
     def test_parse_custom_headers_rejects_non_object(self):
         with self.assertRaises(ValueError):
             parse_custom_headers("[]")
+
+
+class ChannelImportTests(unittest.TestCase):
+    def test_parse_newapi_json(self):
+        channels = parse_channel_import('{"_type":"newapi_channel_conn","key":"sk-test","url":"https://example.com"}')
+        self.assertEqual(
+            channels, [{"url": "https://example.com/v1", "key": "sk-test", "_type": "newapi_channel_conn"}]
+        )
+
+    def test_parse_escaped_newapi_json_with_markdown_url(self):
+        channels = parse_channel_import(
+            r'{"\_type":"newapi\_channel\_conn","key":"sk-test","url":"[https://example.com](https://example.com)"}'
+        )
+        self.assertEqual(
+            channels, [{"url": "https://example.com/v1", "key": "sk-test", "_type": "newapi_channel_conn"}]
+        )
+
+    def test_parse_markdown_and_key_lines(self):
+        channels = parse_channel_import("[https://example.com](https://example.com)\nsk-test")
+        self.assertEqual(channels, [{"url": "https://example.com/v1", "key": "sk-test"}])
+
+    def test_parse_multiple_url_key_lines(self):
+        channels = parse_channel_import("https://one.example\nsk-one\nhttps://two.example/v1\nsk-two")
+        self.assertEqual(
+            channels,
+            [
+                {"url": "https://one.example/v1", "key": "sk-one"},
+                {"url": "https://two.example/v1", "key": "sk-two"},
+            ],
+        )
+
+    def test_parse_repeated_url_with_different_keys(self):
+        channels = parse_channel_import("https://example.com\nsk-one\nhttps://example.com\nsk-two")
+        self.assertEqual(
+            channels,
+            [
+                {"url": "https://example.com/v1", "key": "sk-one"},
+                {"url": "https://example.com/v1", "key": "sk-two"},
+            ],
+        )
 
 
 if __name__ == "__main__":

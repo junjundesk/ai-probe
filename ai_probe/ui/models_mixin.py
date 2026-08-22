@@ -91,7 +91,12 @@ class ModelsMixin:
         status = model.get("status", "未测试")
         first = self._format_ms(model.get("first_ms"))
         total = self._format_ms(model.get("total_ms"))
-        detail = (model.get("error") or "").replace("\n", " ")
+        detail = (
+            (model.get("error") or model.get("reply"))
+            if status == "不可用"
+            else (model.get("reply") or model.get("error"))
+        ) or ""
+        detail = detail.replace("\n", " ")
         key_label = api_key_label(project_key_for_model(self._project(), model))
         tag = {"可用": "ok", "不可用": "fail", "测试中": "testing"}.get(status, "unknown")
         self.model_tree.item(
@@ -136,15 +141,31 @@ class ModelsMixin:
             return None
 
     def _collect_remote_models(self, clients: dict[str, OpenAIClient]) -> tuple[list[dict], list[str]]:
+        if not clients:
+            return [], []
+
+        # Fetch every key's model list concurrently.  Merge in the original key
+        # order afterwards so duplicate model ownership remains deterministic.
+        client_items = list(clients.items())
+        workers = min(MAX_WORKERS, len(client_items))
+        model_lists = {}
+        errors_by_key = {}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            future_map = {pool.submit(client.list_models): key_id for key_id, client in client_items}
+            for future in as_completed(future_map):
+                key_id = future_map[future]
+                try:
+                    model_lists[key_id] = future.result()
+                except Exception as exc:
+                    errors_by_key[key_id] = str(exc)
+
         found = {}
         errors = []
-        for key_id, client in clients.items():
-            try:
-                model_ids = client.list_models()
-            except Exception as exc:
-                errors.append(str(exc))
+        for key_id, _client in client_items:
+            if key_id in errors_by_key:
+                errors.append(errors_by_key[key_id])
                 continue
-            for model_id in model_ids:
+            for model_id in model_lists.get(key_id, []):
                 found.setdefault(model_id, key_id)
         entries = [{"id": model_id, "api_key_id": key_id} for model_id, key_id in found.items()]
         entries.sort(key=lambda item: item["id"].lower())
@@ -660,7 +681,11 @@ class ModelsMixin:
         model = next((item for item in project["models"] if item["id"] == selected[0]), None)
         if not model:
             return
-        detail = model.get("error")
+        detail = (
+            (model.get("error") or model.get("reply"))
+            if model.get("status") == "不可用"
+            else (model.get("reply") or model.get("error"))
+        )
         if detail:
             messagebox.showinfo(model["id"], detail)
 

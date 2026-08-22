@@ -60,6 +60,9 @@ class LayoutMixin:
         self._mac_button(project_actions, "删除", self._delete_project, kind="danger", surface="#f1f2f5").grid(
             row=0, column=1, sticky="ew", padx=(3, 0)
         )
+        self._mac_button(project_actions, "渠道导入", self._import_channels, surface="#f1f2f5").grid(
+            row=0, column=2, sticky="ew", padx=(3, 0)
+        )
         self._mac_button(project_actions, "导入", self._import_config, surface="#f1f2f5").grid(
             row=1, column=0, sticky="ew", padx=(0, 3), pady=(6, 0)
         )
@@ -380,7 +383,7 @@ class LayoutMixin:
         self.model_tree.heading("status", text="状态")
         self.model_tree.heading("first", text="首字延时")
         self.model_tree.heading("total", text="总耗时")
-        self.model_tree.heading("reply", text="错误")
+        self.model_tree.heading("reply", text="响应 / 错误")
         self.model_tree.column("#0", width=210, minwidth=130)
         self.model_tree.column("key", width=130, minwidth=90, anchor="w")
         self.model_tree.column("status", width=75, minwidth=65, anchor="center", stretch=False)
