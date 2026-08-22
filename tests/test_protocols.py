@@ -121,6 +121,21 @@ class ResponsesInputNormalizationTests(unittest.TestCase):
             {"type": "reasoning", "summary": [{"type": "summary_text", "text": "think"}]},
         )
 
+    def test_non_deepseek_responses_strips_server_item_ids(self):
+        body = {
+            "model": "gpt-5.6-sol",
+            "input": [
+                {"type": "message", "id": "msg_previous", "role": "user", "content": []},
+                {"type": "reasoning", "id": "rs_previous", "summary": []},
+                {"type": "function_call", "id": "fc_previous", "call_id": "call_keep", "name": "tool", "arguments": "{}"},
+                {"type": "custom_tool_call_output", "id": "ctco_previous", "call_id": "call_keep", "output": "ok"},
+            ],
+        }
+        result = _prepare_responses_upstream_body(body, "gpt-5.6-sol")
+        self.assertEqual([item["type"] for item in result["input"]], ["message", "function_call", "custom_tool_call_output"])
+        self.assertTrue(all("id" not in item for item in result["input"]))
+        self.assertEqual(result["input"][1]["call_id"], "call_keep")
+
     def test_non_deepseek_web_search_call_gets_action_queries(self):
         body = {
             "model": "gpt-5.6-sol",
@@ -618,6 +633,49 @@ class StreamConversionTests(unittest.TestCase):
         self.assertNotIn(b'"type": "error"', stream)
         log_exception.assert_called_once()
 
+    def test_responses_passthrough_completes_after_disconnect_with_output(self):
+        class BrokenResponse:
+            status_code = 200
+            headers = {}
+
+            def iter_content(self, chunk_size=8192):
+                yield (
+                    b'event: response.created\n'
+                    b'data: {"type":"response.created","sequence_number":0,"response":{"id":"resp-test","model":"gpt-test","created_at":1}}\n\n'
+                    b'event: response.output_text.delta\n'
+                    b'data: {"type":"response.output_text.delta","sequence_number":1,"delta":"ok"}\n\n'
+                )
+                raise RuntimeError("stream closed")
+
+            def close(self):
+                pass
+
+        class Handler:
+            def __init__(self):
+                self.wfile = BytesIO()
+                self.close_connection = False
+
+            def send_response(self, status):
+                pass
+
+            def send_header(self, name, value):
+                pass
+
+            def end_headers(self):
+                pass
+
+        class App:
+            def record_relay_usage(self, *args):
+                pass
+
+        handler = Handler()
+        RelayServer.passthrough_stream(App(), handler, BrokenResponse(), "responses", {}, "gpt-test")
+
+        stream = handler.wfile.getvalue()
+        self.assertIn(b'"type":"response.output_text.delta"', stream)
+        self.assertIn(b'"type": "response.completed"', stream)
+        self.assertIn(b'"id": "resp-test"', stream)
+
 
 class RelayErrorLoggingTests(unittest.TestCase):
     class App:
@@ -653,14 +711,22 @@ class RelayErrorLoggingTests(unittest.TestCase):
             server.start()
             try:
                 self.assertEqual(
-                    self.post(server, {"model": "missing-model", "input": "hello"}, {"Authorization": "Bearer secret"}),
+                    self.post(
+                        server,
+                        {"model": "missing-model", "input": "hello", "instructions": "x" * 100_000},
+                        {"Authorization": "Bearer secret"},
+                    ),
                     404,
                 )
                 entry = json.loads(log_path.read_text(encoding="utf-8").strip())
                 self.assertEqual(entry["status"], 404)
                 self.assertEqual(entry["path"], "/v1/responses")
-                self.assertEqual(entry["request_body"]["model"], "missing-model")
-                self.assertEqual(entry["request_headers"]["Authorization"], "[REDACTED]")
+                self.assertEqual(entry["request"]["model"], "missing-model")
+                self.assertEqual(entry["request"]["input"], {"kind": "text", "chars": 5})
+                self.assertEqual(entry["request"]["instructions_chars"], 100_000)
+                self.assertNotIn("request_headers", entry)
+                self.assertNotIn("request_body", entry)
+                self.assertLess(log_path.stat().st_size, 4000)
 
                 server.error_logging_enabled = False
                 self.assertEqual(self.post(server, {"model": "still-missing", "input": "hello"}), 404)
@@ -754,7 +820,10 @@ class RelayErrorLoggingTests(unittest.TestCase):
             self.assertEqual(entry["status"], 502)
             self.assertEqual(entry["attempts"][0]["upstream_status"], 404)
             self.assertEqual(entry["attempts"][0]["upstream_error"], "upstream missing")
-            self.assertEqual(entry["attempts"][0]["upstream_headers"]["Authorization"], "[REDACTED]")
+            self.assertEqual(entry["attempts"][0]["upstream_trace"], {"content-type": "application/json"})
+            self.assertNotIn("upstream_headers", entry["attempts"][0])
+            self.assertNotIn("upstream_body", entry["attempts"][0])
+            self.assertNotIn("upstream_response_headers", entry["attempts"][0])
 
     def test_relay_log_keeps_only_current_day_file(self):
         app = self.App({"projects": [], "relay": {"project_ids": []}})
