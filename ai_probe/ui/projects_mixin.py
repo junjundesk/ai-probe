@@ -5,7 +5,20 @@ from __future__ import annotations
 import copy
 import json
 import uuid
-from tkinter import END, VERTICAL, Canvas, Listbox, StringVar, Text, Toplevel, messagebox, simpledialog, ttk
+from tkinter import (
+    END,
+    VERTICAL,
+    Canvas,
+    Listbox,
+    Menu,
+    StringVar,
+    TclError,
+    Text,
+    Toplevel,
+    messagebox,
+    simpledialog,
+    ttk,
+)
 from urllib.parse import urlsplit
 
 from ..config import QUICK_USER_AGENT
@@ -434,6 +447,41 @@ class ProjectsMixin:
         scrollbar = ttk.Scrollbar(body, orient=VERTICAL, command=editor.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         editor.configure(yscrollcommand=scrollbar.set)
+
+        editor_context_menu = Menu(window, tearoff=False)
+
+        def editor_action(sequence):
+            editor.focus_set()
+            editor.event_generate(sequence)
+
+        def select_all():
+            editor.focus_set()
+            editor.tag_add("sel", "1.0", "end-1c")
+            editor.mark_set("insert", "end-1c")
+
+        editor_context_menu.add_command(label="剪切", command=lambda: editor_action("<<Cut>>"))
+        editor_context_menu.add_command(label="复制", command=lambda: editor_action("<<Copy>>"))
+        editor_context_menu.add_command(label="粘贴", command=lambda: editor_action("<<Paste>>"))
+        editor_context_menu.add_separator()
+        editor_context_menu.add_command(label="全选", command=select_all)
+
+        def show_editor_context_menu(event):
+            index = editor.index(f"@{event.x},{event.y}")
+            try:
+                in_selection = editor.compare("sel.first", "<=", index) and editor.compare(index, "<=", "sel.last")
+            except TclError:
+                in_selection = False
+            if not in_selection:
+                editor.tag_remove("sel", "1.0", END)
+                editor.mark_set("insert", index)
+            editor.focus_set()
+            try:
+                editor_context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                editor_context_menu.grab_release()
+            return "break"
+
+        editor.bind("<Button-3>", show_editor_context_menu)
 
         footer = ttk.Frame(window, style="Panel.TFrame", padding=14)
         footer.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
