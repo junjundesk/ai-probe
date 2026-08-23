@@ -317,11 +317,13 @@ class LayoutMixin:
             font=("Consolas", 9),
         )
         remote_scroll = ttk.Scrollbar(remote_list_frame, orient=VERTICAL, command=self.remote_list.yview)
-        self.remote_list.configure(yscrollcommand=remote_scroll.set)
+        remote_xscroll = ttk.Scrollbar(remote_list_frame, orient=HORIZONTAL, command=self.remote_list.xview)
+        self.remote_list.configure(yscrollcommand=remote_scroll.set, xscrollcommand=remote_xscroll.set)
         self.remote_list.grid(row=0, column=0, sticky="nsew")
         self.remote_list.bind("<Button-3>", self._show_remote_model_menu)
         self.remote_list.bind("<Control-c>", self._copy_selected_remote_model)
         remote_scroll.grid(row=0, column=1, sticky="ns")
+        remote_xscroll.grid(row=1, column=0, sticky="ew")
 
         remote_actions = ttk.Frame(remote_panel, style="Panel.TFrame")
         remote_actions.grid(row=3, column=0, sticky="ew", pady=(10, 0))
