@@ -37,6 +37,9 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.model_tree_items = {}
         self.remote_model_entries = []
         self.next_model_tree_item = 0
+        self._row_render_cache = {}
+        self._row_order_index = {}
+        self._remote_list_signature = None
         self.visible_project_ids = []
         self.header_rows = []
         self.active_headers_mode = "json"

@@ -40,6 +40,12 @@ _SKIP_PROBE_KEYWORDS = (
 
 
 class ModelsMixin:
+    def __init__(self):
+        # 直接实例化 mixin（如测试隔离用例）时也保证渲染缓存可用。
+        self._row_render_cache = {}
+        self._row_order_index = {}
+        self._remote_list_signature = None
+
     @staticmethod
     def _format_ms(value) -> str:
         if value is None:
@@ -50,16 +56,22 @@ class ModelsMixin:
         project = self._project()
         if not project:
             return
-        self.remote_list.delete(0, END)
-        self.remote_model_entries = []
         keys = _project_keys(project)
         show_key_label = len(keys) > 1
+        entries = []
+        display_rows = []
         for item in project.get("discovered_models", []):
             entry = item if isinstance(item, dict) else {"id": str(item), "api_key_id": keys[0]["id"] if keys else ""}
-            self.remote_model_entries.append(entry)
+            entries.append(entry)
             key_label = api_key_label(project_key_for_model(project, entry))
-            display = f"{entry['id']}  [{key_label}]" if show_key_label else entry["id"]
-            self.remote_list.insert(END, display)
+            display_rows.append(f"{entry['id']}  [{key_label}]" if show_key_label else entry["id"])
+        # 远端列表只在内容真正变化时才重建，避免每次刷新全量 Tcl insert。
+        if display_rows != self._remote_list_signature:
+            self.remote_list.delete(0, END)
+            for display in display_rows:
+                self.remote_list.insert(END, display)
+            self._remote_list_signature = display_rows
+        self.remote_model_entries = entries
         self.discovered_count.set(f"远程模型 {len(project['discovered_models'])}")
 
         visible_model_ids = set()
@@ -73,8 +85,12 @@ class ModelsMixin:
                 self.model_tree_items[model_id] = item_id
                 self.tree_model_ids[item_id] = model_id
                 self.model_tree.insert("", END, iid=item_id)
+                self.model_tree.move(item_id, "", index)
+                self._row_order_index[item_id] = index
+            elif self._row_order_index.get(item_id) != index:
+                self.model_tree.move(item_id, "", index)
+                self._row_order_index[item_id] = index
             self._update_model_row(model)
-            self.model_tree.move(item_id, "", index)
         for model_id, item_id in list(self.model_tree_items.items()):
             if model_id in visible_model_ids:
                 continue
@@ -82,9 +98,11 @@ class ModelsMixin:
                 self.model_tree.delete(item_id)
             self.model_tree_items.pop(model_id, None)
             self.tree_model_ids.pop(item_id, None)
+            self._row_render_cache.pop(item_id, None)
+            self._row_order_index.pop(item_id, None)
         self.added_count.set(f"已添加 {len(project['models'])}")
 
-    def _update_model_row(self, model: dict):
+    def _update_model_row(self, model: dict, force: bool = False):
         item_id = self.model_tree_items.get(model["id"])
         if item_id is None or not self.model_tree.exists(item_id):
             return
@@ -99,6 +117,11 @@ class ModelsMixin:
         detail = detail.replace("\n", " ")
         key_label = api_key_label(project_key_for_model(self._project(), model))
         tag = {"可用": "ok", "不可用": "fail", "测试中": "testing"}.get(status, "unknown")
+        signature = (model["id"], key_label, status, first, total, detail[:180], tag)
+        # 记忆化：渲染内容未变化时跳过 Tcl 调用，显著降低重复刷新的 UI 线程开销。
+        if not force and self._row_render_cache.get(item_id) == signature:
+            return
+        self._row_render_cache[item_id] = signature
         self.model_tree.item(
             item_id,
             text=model["id"],
