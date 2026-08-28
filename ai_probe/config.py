@@ -36,6 +36,7 @@ DATA_FILE = APP_DIR / "ai_probe_projects.json"
 CONFIG_KEY_FILE = APP_DIR / "ai_probe_config.key"
 USAGE_FILE = APP_DIR / "ai_probe_usage.json"
 RELAY_ERROR_LOG = APP_DIR / "logs" / "relay-errors.jsonl"
+RELAY_REQUEST_LOG = APP_DIR / "logs" / "relay-requests.jsonl"
 USAGE_SAVE_INTERVAL = 1.0
 TEST_PROMPT = "现在几点了"
 MAX_WORKERS = 16

@@ -27,6 +27,8 @@ class StoreMixin:
             "api_key": "",
             "project_ids": [],
             "error_logging_enabled": True,
+            "request_logging_enabled": True,
+            "request_debug_capture": False,
         }
         return {
             "version": 2,
@@ -43,6 +45,8 @@ class StoreMixin:
             "api_key": "",
             "project_ids": [],
             "error_logging_enabled": True,
+            "request_logging_enabled": True,
+            "request_debug_capture": False,
         }
         if not isinstance(data, dict) or not isinstance(data.get("projects"), list):
             raise ValueError("配置文件缺少有效的 projects 列表")
@@ -108,6 +112,8 @@ class StoreMixin:
             project_id for project_id in relay.get("project_ids", []) if isinstance(project_id, str)
         ]
         relay["error_logging_enabled"] = bool(relay.get("error_logging_enabled", True))
+        relay["request_logging_enabled"] = bool(relay.get("request_logging_enabled", True))
+        relay["request_debug_capture"] = bool(relay.get("request_debug_capture", False))
         data["version"] = 2
         return data
 

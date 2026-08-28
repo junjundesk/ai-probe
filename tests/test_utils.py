@@ -38,6 +38,8 @@ class NormalizationTests(unittest.TestCase):
 
     def test_normalize_proxy_url(self):
         self.assertEqual(normalize_proxy_url(""), "")
+        self.assertEqual(normalize_proxy_url("proxy.example.com"), "http://proxy.example.com")
+        self.assertEqual(normalize_proxy_url("proxy.example.com:8080"), "http://proxy.example.com:8080")
         self.assertEqual(normalize_proxy_url("HTTP://127.0.0.1:8080/"), "http://127.0.0.1:8080")
         with self.assertRaises(ValueError):
             normalize_proxy_url("http://host/path")

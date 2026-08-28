@@ -7,6 +7,8 @@ from tkinter import BooleanVar, StringVar, Tk, ttk
 
 from ..config import USAGE_FILE
 from ..edit_context import install_edit_context_menu
+from ..relay_only import restart_application
+from ..tray import TrayController
 from ..usage import UsageStats
 from .layout_mixin import LayoutMixin
 from .models_mixin import ModelsMixin
@@ -49,6 +51,13 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.relay_stats_cache_rate = StringVar(value="-")
         self.relay_stats_input = StringVar(value="-")
         self.relay_stats_output = StringVar(value="-")
+        self.lightweight_mode = False
+        self.tray = TrayController(
+            root,
+            on_restore=self._on_tray_restore,
+            on_lightweight=self._on_lightweight_mode_changed,
+            on_close=self._on_close,
+        )
 
         self.project_name = StringVar()
         self.project_search = StringVar()
@@ -68,6 +77,8 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.relay_port = StringVar(value=str(relay.get("port", 8040)))
         self.relay_key = StringVar(value=str(relay.get("api_key", "")))
         self.relay_error_logging_enabled = BooleanVar(value=bool(relay.get("error_logging_enabled", True)))
+        self.relay_request_logging_enabled = BooleanVar(value=bool(relay.get("request_logging_enabled", True)))
+        self.relay_request_debug_capture = BooleanVar(value=bool(relay.get("request_debug_capture", False)))
         self.relay_status = StringVar(value="未启动")
         self.relay_url = StringVar(value="")
         self.relay_key.trace_add("write", self._relay_key_changed)
@@ -90,6 +101,42 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
             self._save_store()
         self.root.after(80, self._poll_events)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.bind("<Unmap>", self.tray.handle_unmap, add="+")
+        self.tray.start()
+
+    def _minimize_to_tray(self):
+        """Hide the main window while keeping the optional tray icon alive."""
+
+        if not self.tray.minimize():
+            # Keep the window visible if the tray icon cannot be confirmed.
+            self.status.set("系统托盘不可用，未隐藏窗口")
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+
+    def _on_tray_restore(self):
+        if self.relay_window and self.relay_window.winfo_exists():
+            self.relay_window.lift()
+
+    def _on_lightweight_mode_changed(self, enabled: bool):
+        """Switch to a process that only keeps the local relay alive."""
+
+        self.lightweight_mode = enabled
+        if enabled:
+            self._commit_form()
+            self._save_store()
+            if self.relay_server:
+                self.relay_server.stop()
+                self.relay_server = None
+            if restart_application(True):
+                self.tray.stop()
+                self.root.destroy()
+            else:
+                self.tray.lightweight_mode = False
+                self.lightweight_mode = False
+                self.status.set("轻量模式启动失败")
+        else:
+            self.status.set("轻量模式已关闭")
 
     def _configure_window(self):
         self.root.title("AI Probe · 多项目测活 · 作者QQ168889526")

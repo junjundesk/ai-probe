@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -18,7 +19,7 @@ except ImportError:
     requests = None
 
 from .client import OpenAIClient
-from .config import RELAY_ERROR_LOG
+from .config import RELAY_ERROR_LOG, RELAY_REQUEST_LOG
 from .projects import client_from_project
 from .protocols import (
     _canonical_stream_events,
@@ -42,6 +43,13 @@ _CALL_OUTPUT_TYPES = {
 
 _UPSTREAM_STREAM_ATTEMPTS = 3
 _UPSTREAM_STREAM_BACKOFF = (0.25, 0.5)
+
+# 调试模式下的完整报文捕获上限。
+DEBUG_CAPTURE_LIMIT = 256 * 1024
+_DEBUG_STRING_CAP = 256 * 1024
+_DEBUG_LIST_CAP = 300
+_DEBUG_DICT_CAP = 200
+_DEBUG_DEPTH_CAP = 14
 
 
 class _ResponsesStreamTracker:
@@ -348,13 +356,32 @@ class RelayServer:
         "top_p",
     )
     _TRACE_HEADER_NAMES = {"content-type", "cf-ray", "request-id", "x-request-id", "x-oneapi-request-id"}
+    _DEBUG_CAPTURE_REDACT_HEADERS = {
+        "authorization",
+        "x-api-key",
+        "cookie",
+        "set-cookie",
+        "proxy-authorization",
+        "x-goog-api-key",
+    }
 
-    def __init__(self, app, host: str, port: int, auth_key: str = "", error_logging_enabled: bool = True):
+    def __init__(
+        self,
+        app,
+        host: str,
+        port: int,
+        auth_key: str = "",
+        error_logging_enabled: bool = True,
+        request_logging_enabled: bool = True,
+        request_debug_capture: bool = False,
+    ):
         self.app = app
         self.host = host
         self.port = port
         self.auth_key = auth_key.strip()
         self.error_logging_enabled = bool(error_logging_enabled)
+        self.request_logging_enabled = bool(request_logging_enabled)
+        self.request_debug_capture = bool(request_debug_capture)
         self.httpd = None
         self.thread = None
         self._lock = threading.Lock()
@@ -466,17 +493,39 @@ class RelayServer:
                     "path": self.path,
                     "content_length": self.headers.get("Content-Length", ""),
                 }
+                self._relay_request_context = {
+                    "request_id": request_id,
+                    "path": incoming_path,
+                    "started": time.monotonic(),
+                }
                 if not self._authorized():
+                    self._relay_request_context["auth_failed"] = True
+                    if owner.request_debug_capture:
+                        self._relay_request_context["debug_incoming_headers"] = owner._debug_headers(self.headers)
+                    owner.log_request(self, 401)
                     return self._error(401, "本地中转密钥无效")
                 length = self.headers.get("Content-Length")
                 try:
                     raw_body = self.rfile.read(int(length or 0))
                     body = json.loads(raw_body)
                 except (ValueError, TypeError, json.JSONDecodeError):
+                    if owner.request_debug_capture:
+                        self._relay_request_context["debug_incoming_body"] = owner._debug_body(
+                            raw_body[:DEBUG_CAPTURE_LIMIT]
+                        )
+                    owner.log_request(self, 400, error="请求体必须是 JSON")
                     return self._error(400, "请求体必须是 JSON")
                 if owner.error_logging_enabled:
                     self._relay_error_context["request"] = owner._request_summary(body, raw_body)
+                if owner.request_logging_enabled:
+                    self._relay_request_context["request"] = owner._request_summary(body, raw_body)
+                    if owner.request_debug_capture:
+                        self._relay_request_context["debug_incoming_headers"] = owner._debug_headers(self.headers)
+                        self._relay_request_context["debug_incoming_body"] = owner._debug_body(
+                            raw_body[:DEBUG_CAPTURE_LIMIT]
+                        )
                 if not isinstance(body, dict) or not body.get("model"):
+                    owner.log_request(self, 400, error="请求体缺少 model")
                     return self._error(400, "请求体缺少 model")
                 model = str(body["model"])
                 routes = owner.model_routes().get(model, [])
@@ -484,6 +533,9 @@ class RelayServer:
                     self._relay_error_context.update(
                         model=model,
                         available_model_count=len(owner.model_routes()),
+                    )
+                    owner.log_request(
+                        self, 404, model=model, available_model_count=len(owner.model_routes()), error=f"未启用模型：{model}"
                     )
                     return self._error(404, f"未启用模型：{model}", "model_not_found")
                 incoming_mode = _request_mode(incoming_path)
@@ -496,6 +548,12 @@ class RelayServer:
                     requested_stream=requested_stream,
                     route_count=len(routes),
                     attempts=attempts,
+                )
+                self._relay_request_context.update(
+                    model=model,
+                    incoming_mode=incoming_mode,
+                    requested_stream=requested_stream,
+                    route_count=len(routes),
                 )
                 last_error = ""
                 for project in owner.ordered_routes(model, routes):
@@ -540,6 +598,11 @@ class RelayServer:
                         if not mode_converted and "?" in self.path:
                             path += "?" + self.path.split("?", 1)[1]
                         upstream_headers = owner.upstream_headers(client, self.headers, passthrough=not mode_converted)
+                        if owner.request_debug_capture:
+                            attempt["upstream_request_headers"] = owner._debug_headers(upstream_headers)
+                            attempt["upstream_request"] = owner._debug_body(
+                                json.dumps(upstream_body, ensure_ascii=False).encode("utf-8")
+                            )
                         attempt.update(
                             upstream_mode=client.api_mode,
                             upstream_url=f"{client.base_url}{path}",
@@ -556,18 +619,43 @@ class RelayServer:
                             upstream_trace=owner._trace_headers(response.headers),
                         )
                         if response.ok:
-                            return owner.write_upstream(
+                            try:
+                                owner.write_upstream(
+                                    self,
+                                    response,
+                                    client.api_mode,
+                                    incoming_mode,
+                                    model,
+                                    project,
+                                    converted,
+                                    requested_stream,
+                                    custom_tool_names,
+                                    request_id,
+                                )
+                            except Exception as exc:
+                                self._relay_request_context["delivery_error"] = (
+                                    f"{type(exc).__name__}: {exc}"
+                                )
+                                raise
+                            owner.log_request(
                                 self,
-                                response,
-                                client.api_mode,
-                                incoming_mode,
-                                model,
-                                project,
-                                converted,
-                                requested_stream,
-                                custom_tool_names,
-                                request_id,
+                                response.status_code,
+                                model=model,
+                                incoming_mode=incoming_mode,
+                                requested_stream=requested_stream,
+                                route_count=len(routes),
+                                project=attempt.get("project"),
+                                base_url=attempt.get("base_url"),
+                                upstream_mode=attempt.get("upstream_mode"),
+                                converted=attempt.get("converted"),
+                                upstream_url=attempt.get("upstream_url"),
+                                upstream_trace=attempt.get("upstream_trace"),
+                                attempts=attempts,
                             )
+                            return
+                        if owner.request_debug_capture:
+                            attempt["upstream_response_headers"] = owner._debug_headers(response.headers)
+                            attempt["upstream_response"] = owner._debug_body(response.content[:DEBUG_CAPTURE_LIMIT])
                         error_text = error_message_from_response(response)
                         attempt["upstream_error"] = error_text
                         response.close()
@@ -586,6 +674,11 @@ class RelayServer:
                                 "converted": True,
                             }
                             attempt["compatibility_retry"] = compatibility_retry
+                            if owner.request_debug_capture:
+                                compatibility_retry["upstream_request_headers"] = owner._debug_headers(upstream_headers)
+                                compatibility_retry["upstream_request"] = owner._debug_body(
+                                    json.dumps(compatible_body, ensure_ascii=False).encode("utf-8")
+                                )
                             response = owner._post_upstream(
                                 f"{client.base_url}{path}",
                                 headers=upstream_headers,
@@ -597,17 +690,47 @@ class RelayServer:
                                 upstream_trace=owner._trace_headers(response.headers),
                             )
                             if response.ok:
-                                return owner.write_upstream(
+                                try:
+                                    owner.write_upstream(
+                                        self,
+                                        response,
+                                        client.api_mode,
+                                        incoming_mode,
+                                        model,
+                                        project,
+                                        True,
+                                        requested_stream,
+                                        custom_tool_names,
+                                        request_id,
+                                    )
+                                except Exception as exc:
+                                    self._relay_request_context["delivery_error"] = (
+                                        f"{type(exc).__name__}: {exc}"
+                                    )
+                                    raise
+                                owner.log_request(
                                     self,
-                                    response,
-                                    client.api_mode,
-                                    incoming_mode,
-                                    model,
-                                    project,
-                                    True,
-                                    requested_stream,
-                                    custom_tool_names,
-                                    request_id,
+                                    response.status_code,
+                                    model=model,
+                                    incoming_mode=incoming_mode,
+                                    requested_stream=requested_stream,
+                                    route_count=len(routes),
+                                    project=attempt.get("project"),
+                                    base_url=attempt.get("base_url"),
+                                    upstream_mode=attempt.get("upstream_mode"),
+                                    converted=True,
+                                    upstream_url=attempt.get("upstream_url"),
+                                    upstream_trace=attempt.get("upstream_trace"),
+                                    compatibility_retry=True,
+                                    attempts=attempts,
+                                )
+                                return
+                            if owner.request_debug_capture:
+                                compatibility_retry["upstream_response_headers"] = owner._debug_headers(
+                                    response.headers
+                                )
+                                compatibility_retry["upstream_response"] = owner._debug_body(
+                                    response.content[:DEBUG_CAPTURE_LIMIT]
                                 )
                             error_text = error_message_from_response(response)
                             compatibility_retry["upstream_error"] = error_text
@@ -619,12 +742,23 @@ class RelayServer:
                             exception_type=type(exc).__name__,
                             exception=str(exc),
                         )
+                owner.log_request(
+                    self,
+                    502,
+                    model=model,
+                    incoming_mode=incoming_mode,
+                    requested_stream=requested_stream,
+                    route_count=len(routes),
+                    attempts=attempts,
+                    error=last_error or "所有上游接口均不可用",
+                )
                 self._error(502, last_error or "所有上游接口均不可用", "upstream_error")
 
         try:
             RELAY_ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
             with self._log_lock:
-                self._prune_old_logs(self._current_log_path())
+                self._prune_old_logs(self._current_log_path(), "relay-errors-*.jsonl", RELAY_ERROR_LOG)
+                self._prune_old_logs(self._current_request_log_path(), "relay-requests-*.jsonl", RELAY_REQUEST_LOG)
         except OSError:
             pass
 
@@ -715,6 +849,45 @@ class RelayServer:
         return value
 
     @classmethod
+    def _is_sensitive_key(cls, key: str) -> bool:
+        normalized_key = key.lower().replace("-", "_")
+        key_parts = set(normalized_key.split("_"))
+        return bool(
+            normalized_key in cls._SENSITIVE_LOG_KEYS
+            or normalized_key.startswith("api_key")
+            or normalized_key.endswith("_key")
+            or key_parts.intersection({"authorization", "cookie", "password", "secret", "token"})
+        )
+
+    @classmethod
+    def _sanitize_debug_value(cls, value, key: str = "", depth: int = 0):
+        """调试模式脱敏：仅遮蔽敏感键，保留长文本以复现报文。"""
+        if isinstance(key, str) and key and cls._is_sensitive_key(key):
+            return "[REDACTED]"
+        if depth >= _DEBUG_DEPTH_CAP:
+            return "[MAX_DEPTH]"
+        if isinstance(value, dict):
+            items = list(value.items())
+            sanitized = {}
+            for item_key, item_value in items[:_DEBUG_DICT_CAP]:
+                raw_key = str(item_key)
+                sanitized[raw_key[:200]] = cls._sanitize_debug_value(item_value, raw_key, depth + 1)
+            if len(items) > _DEBUG_DICT_CAP:
+                sanitized["_truncated_fields"] = len(items) - _DEBUG_DICT_CAP
+            return sanitized
+        if isinstance(value, (list, tuple, set)):
+            items = list(value)
+            sanitized = [cls._sanitize_debug_value(item, depth=depth + 1) for item in items[:_DEBUG_LIST_CAP]]
+            if len(items) > _DEBUG_LIST_CAP:
+                sanitized.append({"_truncated_items": len(items) - _DEBUG_LIST_CAP})
+            return sanitized
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "replace")
+        if isinstance(value, str) and len(value) > _DEBUG_STRING_CAP:
+            return f"{value[:_DEBUG_STRING_CAP]}\n[truncated {len(value) - _DEBUG_STRING_CAP} chars]"
+        return value
+
+    @classmethod
     def _request_summary(cls, body, raw_body: bytes) -> dict:
         summary = {
             "body_bytes": len(raw_body),
@@ -795,14 +968,51 @@ class RelayServer:
             if str(name).lower() in cls._TRACE_HEADER_NAMES or str(name).lower().endswith("request-id")
         }
 
+    @classmethod
+    def _debug_headers(cls, headers, extra_redact=()) -> dict:
+        """调试模式使用的请求/响应头快照，仅脱敏密钥类字段。"""
+        blocked = set(cls._DEBUG_CAPTURE_REDACT_HEADERS) | {str(name).lower() for name in extra_redact}
+        snapshot = {}
+        for name, value in headers.items():
+            key = str(name)
+            if key.lower() in blocked or cls._is_sensitive_key(key):
+                snapshot[key[:100]] = "[REDACTED]"
+            else:
+                snapshot[key[:100]] = cls._sanitize_debug_value(str(value)[:2000], key)
+        return snapshot
+
+    @staticmethod
+    def _debug_body(raw: bytes) -> dict:
+        """把报文字节转换为可读结构：优先 JSON，其次文本，最后 base64。"""
+        if not raw:
+            return {"empty": True}
+        entry = {"size": len(raw)}
+        try:
+            return {**entry, "json": json.loads(raw.decode("utf-8"))}
+        except (ValueError, UnicodeDecodeError):
+            pass
+        text = raw.decode("utf-8", "replace")
+        replacement = text.count("�")
+        if replacement <= len(text) // 4:
+            return {**entry, "text": text}
+        return {**entry, "base64": base64.b64encode(raw).decode("ascii")}
+
     @staticmethod
     def _current_log_path() -> Path:
         day = datetime.now().astimezone().strftime("%Y-%m-%d")
         return RELAY_ERROR_LOG.with_name(f"relay-errors-{day}.jsonl")
 
+    @staticmethod
+    def _current_request_log_path() -> Path:
+        day = datetime.now().astimezone().strftime("%Y-%m-%d")
+        return RELAY_REQUEST_LOG.with_name(f"relay-requests-{day}.jsonl")
+
     @classmethod
-    def _prune_old_logs(cls, keep: Path) -> None:
-        for path in (*keep.parent.glob("relay-errors-*.jsonl"), RELAY_ERROR_LOG):
+    def _prune_old_logs(cls, keep: Path, pattern: str, legacy: Path | None = None) -> None:
+        candidates = [*keep.parent.glob(pattern)]
+        if legacy is not None:
+            candidates.append(legacy)
+        for path in candidates:
             if path == keep:
                 continue
             try:
@@ -823,7 +1033,7 @@ class RelayServer:
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = self._current_log_path()
             with self._log_lock:
-                self._prune_old_logs(log_path)
+                self._prune_old_logs(log_path, "relay-errors-*.jsonl", RELAY_ERROR_LOG)
                 with log_path.open("a", encoding="utf-8") as log_file:
                     json.dump(entry, log_file, ensure_ascii=False, default=str)
                     log_file.write("\n")
@@ -831,6 +1041,57 @@ class RelayServer:
             self.app._post(self.app._log, f"中转异常日志写入失败：{log_exc}")
             return
         self.app._post(self.app._log, f"中转异常[{stage}]已记录：{log_path}")
+
+    def log_request(self, handler, status: int, **details):
+        if not self.request_logging_enabled:
+            return
+        sanitize = self._sanitize_debug_value if self.request_debug_capture else self._sanitize_log_value
+        context = getattr(handler, "_relay_request_context", {})
+        started = context.get("started")
+        entry = {
+            "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "request_id": str(context.get("request_id", "") or ""),
+            "status": int(status),
+            "path": str(context.get("path", "") or ""),
+        }
+        if started is not None:
+            entry["duration_ms"] = max(0, int((time.monotonic() - started) * 1000))
+        if context.get("auth_failed"):
+            entry["auth_failed"] = True
+        if context.get("delivery_error"):
+            details = {**details, "delivery_error": context["delivery_error"]}
+        entry.update(sanitize({key: value for key, value in details.items() if value is not None}))
+        request_summary = context.get("request")
+        if isinstance(request_summary, dict):
+            entry["request"] = request_summary
+        for field in ("debug_incoming_headers", "debug_incoming_body", "debug_response_headers", "debug_response_body"):
+            value = context.get(field)
+            if value is not None:
+                entry[field] = value
+        usage = context.get("usage")
+        if isinstance(usage, dict) and any(int(value or 0) for value in usage.values()):
+            entry["usage"] = usage
+        try:
+            log_dir = RELAY_REQUEST_LOG.parent
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = self._current_request_log_path()
+            with self._log_lock:
+                self._prune_old_logs(log_path, "relay-requests-*.jsonl", RELAY_REQUEST_LOG)
+                with log_path.open("a", encoding="utf-8") as log_file:
+                    json.dump(entry, log_file, ensure_ascii=False, default=str)
+                    log_file.write("\n")
+        except OSError as log_exc:
+            self.app._post(self.app._log, f"中转请求日志写入失败：{log_exc}")
+
+    def note_request_usage(self, handler, input_tokens, output_tokens, cached_tokens):
+        context = getattr(handler, "_relay_request_context", None)
+        if context is None:
+            return
+        context["usage"] = {
+            "input_tokens": int(input_tokens or 0),
+            "output_tokens": int(output_tokens or 0),
+            "cached_tokens": int(cached_tokens or 0),
+        }
 
     def log_exception(self, stage: str, exc: Exception, **context):
         self.log_error(
@@ -935,11 +1196,14 @@ class RelayServer:
         handler.close_connection = True
 
     @staticmethod
-    def passthrough_json(app, handler, response, upstream_mode, project, model):
+    def passthrough_json(app, handler, response, upstream_mode, project, model, server=None, debug_capture=False):
         try:
             body = b"".join(response.iter_content(chunk_size=65536))
         finally:
             response.close()
+        if debug_capture and server is not None:
+            handler._relay_request_context["debug_response_body"] = server._debug_body(body[:DEBUG_CAPTURE_LIMIT])
+            handler._relay_request_context["debug_response_headers"] = server._debug_headers(response.headers)
         input_tokens = output_tokens = cached_tokens = 0
         try:
             payload = json.loads(body.decode("utf-8", "replace"))
@@ -947,6 +1211,8 @@ class RelayServer:
             payload = None
         if isinstance(payload, dict):
             input_tokens, output_tokens, cached_tokens = extract_usage_tokens(payload.get("usage"), upstream_mode)
+        if server is not None:
+            server.note_request_usage(handler, input_tokens, output_tokens, cached_tokens)
         RelayServer._response_headers(
             handler,
             response,
@@ -961,10 +1227,11 @@ class RelayServer:
             app.record_relay_usage(project, model, input_tokens, output_tokens, cached_tokens)
 
     @staticmethod
-    def passthrough_stream(app, handler, response, upstream_mode, project, model, server=None):
+    def passthrough_stream(app, handler, response, upstream_mode, project, model, server=None, debug_capture=False):
         RelayServer._response_headers(handler, response, {"content-encoding", "transfer-encoding", "content-length"})
         collector = _SSEUsageCollector(upstream_mode)
         responses_tracker = _ResponsesStreamTracker(model) if upstream_mode == "responses" else None
+        debug_buf = bytearray() if debug_capture and server is not None else None
         try:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
@@ -973,6 +1240,8 @@ class RelayServer:
                     handler.wfile.write(chunk)
                     handler.wfile.flush()
                     collector.feed(chunk)
+                    if debug_buf is not None and len(debug_buf) < DEBUG_CAPTURE_LIMIT:
+                        debug_buf.extend(chunk[: max(0, DEBUG_CAPTURE_LIMIT - len(debug_buf))])
             if responses_tracker and (completion := responses_tracker.completion()):
                 handler.wfile.write(completion)
                 handler.wfile.flush()
@@ -998,7 +1267,12 @@ class RelayServer:
         finally:
             collector.finish()
             response.close()
+        if debug_buf is not None:
+            handler._relay_request_context["debug_response_body"] = server._debug_body(bytes(debug_buf))
+            handler._relay_request_context["debug_response_headers"] = server._debug_headers(response.headers)
         input_tokens, output_tokens, cached_tokens = collector.summary()
+        if server is not None:
+            server.note_request_usage(handler, input_tokens, output_tokens, cached_tokens)
         app.record_relay_usage(project, model, input_tokens, output_tokens, cached_tokens)
 
     def write_upstream(
@@ -1017,20 +1291,28 @@ class RelayServer:
         if not converted:
             if requested_stream:
                 RelayServer.passthrough_stream(
-                    self.app, handler, response, upstream_mode, project, model, server=self
+                    self.app, handler, response, upstream_mode, project, model, server=self,
+                    debug_capture=self.request_debug_capture,
                 )
             else:
-                RelayServer.passthrough_json(self.app, handler, response, upstream_mode, project, model)
+                RelayServer.passthrough_json(
+                    self.app, handler, response, upstream_mode, project, model, server=self,
+                    debug_capture=self.request_debug_capture,
+                )
             return
 
         if not requested_stream:
             try:
+                if self.request_debug_capture:
+                    handler._relay_request_context["debug_response_headers"] = self._debug_headers(response.headers)
                 result = _collect_stream_result(response, upstream_mode, model, custom_tool_names)
                 raw = json.dumps(
                     _response_for_mode(result, incoming_mode, custom_tool_names), ensure_ascii=False
                 ).encode("utf-8")
             finally:
                 response.close()
+            if self.request_debug_capture:
+                handler._relay_request_context["debug_response_body"] = self._debug_body(raw)
             handler.send_response(response.status_code)
             handler.send_header("Content-Type", "application/json; charset=utf-8")
             handler.send_header("Content-Length", str(len(raw)))
@@ -1038,6 +1320,12 @@ class RelayServer:
             handler.end_headers()
             handler.wfile.write(raw)
             usage = result["usage"]
+            self.note_request_usage(
+                handler,
+                usage.get("input_tokens", 0),
+                usage.get("output_tokens", 0),
+                usage.get("cached_tokens", 0),
+            )
             self.app.record_relay_usage(
                 project,
                 model,
@@ -1058,12 +1346,20 @@ class RelayServer:
         def write_stream(chunk: bytes):
             if not chunk:
                 return
+            if client_sink is not None and len(client_sink) < DEBUG_CAPTURE_LIMIT:
+                client_sink.extend(chunk[: max(0, DEBUG_CAPTURE_LIMIT - len(client_sink))])
             handler.wfile.write(chunk)
             handler.wfile.flush()
 
+        debug_capture = self.request_debug_capture
+        upstream_sink = bytearray() if debug_capture else None
+        client_sink = bytearray() if debug_capture else None
         renderer = _StreamRenderer(incoming_mode, model, custom_tool_names)
         try:
             for event in _canonical_stream_events(response, upstream_mode, model, custom_tool_names):
+                if upstream_sink is not None and len(upstream_sink) < DEBUG_CAPTURE_LIMIT:
+                    line = json.dumps(event, ensure_ascii=False)
+                    upstream_sink.extend(f"{line}\n".encode()[: max(0, DEBUG_CAPTURE_LIMIT - len(upstream_sink))])
                 for chunk in renderer.feed(event):
                     write_stream(chunk)
             for chunk in renderer.finish():
@@ -1099,7 +1395,24 @@ class RelayServer:
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass
         finally:
+            if upstream_sink is not None and isinstance(getattr(handler, "_relay_request_context", None), dict):
+                context = handler._relay_request_context
+                context["debug_response_headers"] = self._debug_headers(response.headers)
+                context["debug_response_body"] = {
+                    "upstream_events": self._sanitize_debug_value(
+                        upstream_sink.decode("utf-8", "replace")
+                    ),
+                    "client_output": self._sanitize_debug_value(
+                        client_sink.decode("utf-8", "replace")
+                    ),
+                }
             response.close()
+            self.note_request_usage(
+                handler,
+                renderer.input_tokens,
+                renderer.output_tokens,
+                renderer.cached_tokens,
+            )
             self.app.record_relay_usage(
                 project,
                 model,

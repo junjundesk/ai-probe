@@ -79,6 +79,8 @@ def self_test():
     assert normalize_base_url("https://host/v1/chat/completions") == "https://host/v1"
     assert normalize_base_url("https://host/v1/messages") == "https://host/v1"
     assert normalize_proxy_url("") == ""
+    assert normalize_proxy_url("proxy.example.com") == "http://proxy.example.com"
+    assert normalize_proxy_url("proxy.example.com:8080") == "http://proxy.example.com:8080"
     assert normalize_proxy_url("HTTP://127.0.0.1:8080/") == "http://127.0.0.1:8080"
     assert normalize_proxy_url("socks5h://user:pass@127.0.0.1:1080") == "socks5h://user:pass@127.0.0.1:1080"
     empty_ua_client = OpenAIClient("https://example.com", "", "chat", custom_headers={"User-Agent": ""})

@@ -1,4 +1,5 @@
 import json
+import time
 import unittest
 from http.client import HTTPConnection
 from io import BytesIO
@@ -735,12 +736,16 @@ class RelayErrorLoggingTests(unittest.TestCase):
         def __init__(self, store):
             self.store = store
             self.messages = []
+            self.usage_records = []
 
         def _post(self, callback, *args):
             callback(*args)
 
         def _log(self, message):
             self.messages.append(message)
+
+        def record_relay_usage(self, project, model, input_tokens, output_tokens, cached_tokens):
+            self.usage_records.append((model, input_tokens, output_tokens, cached_tokens))
 
     @staticmethod
     def post(server, payload, headers=None):
@@ -945,6 +950,312 @@ class RelayErrorLoggingTests(unittest.TestCase):
             lines = log_path.read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(lines), 2)
             self.assertEqual(json.loads(lines[1])["status"], 503)
+
+    def test_relay_request_log_records_success_and_usage(self):
+        project = {
+            "id": "project-test",
+            "name": "test",
+            "base_url": "https://example.test/v1",
+            "api_key": "upstream-secret",
+            "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
+            "proxy_url": "",
+            "skip_ssl_verify": False,
+            "api_mode": "responses",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "gpt-test", "api_key_id": "key-test"}],
+        }
+        app = self.App({"projects": [project], "relay": {"project_ids": ["project-test"]}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True, request_logging_enabled=True)
+
+        class UpstreamResponse:
+            ok = True
+            status_code = 200
+            headers = {"Content-Type": "text/event-stream"}
+
+            def iter_content(self, chunk_size=8192):
+                yield b'data: {"type":"response.created","response":{"id":"resp-log","model":"gpt-test"}}\n\n'
+                yield (
+                    b'data: {"type":"response.completed","response":{"id":"resp-log","model":"gpt-test",'
+                    b'"usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}}\n\n'
+                )
+
+            def close(self):
+                pass
+
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"),
+            patch("ai_probe.relay.RELAY_REQUEST_LOG", Path(temp_dir) / "relay-requests.jsonl"),
+            patch("ai_probe.relay.requests.post", return_value=UpstreamResponse()),
+        ):
+            error_log_path = server._current_log_path()
+            request_log_path = server._current_request_log_path()
+            self.assertEqual(error_log_path.parent, request_log_path.parent)
+            server.start()
+            try:
+                status = self.post(server, {"model": "gpt-test", "input": "hello", "stream": True})
+            finally:
+                server.stop()
+
+            self.assertFalse(error_log_path.exists())
+            deadline = time.time() + 2
+            while not request_log_path.exists() and time.time() < deadline:
+                time.sleep(0.02)
+            entry = json.loads(request_log_path.read_text(encoding="utf-8").strip())
+
+        self.assertEqual(status, 200)
+        self.assertFalse(error_log_path.exists())
+        self.assertEqual(entry["status"], 200)
+        self.assertEqual(entry["path"], "/v1/responses")
+        self.assertEqual(entry["model"], "gpt-test")
+        self.assertEqual(entry["project"], "test")
+        self.assertEqual(entry["upstream_mode"], "responses")
+        self.assertFalse(entry["converted"])
+        self.assertTrue(entry["requested_stream"])
+        self.assertGreaterEqual(entry["duration_ms"], 0)
+        self.assertEqual(entry["usage"], {"input_tokens": 11, "output_tokens": 7, "cached_tokens": 0})
+        self.assertIn("request", entry)
+
+    def test_relay_request_log_records_rejections_in_same_directory(self):
+        app = self.App({"projects": [], "relay": {"project_ids": []}})
+        server = RelayServer(app, "127.0.0.1", 0, "secret-key", error_logging_enabled=True)
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"),
+            patch("ai_probe.relay.RELAY_REQUEST_LOG", Path(temp_dir) / "relay-requests.jsonl"),
+        ):
+            error_log_path = server._current_log_path()
+            request_log_path = server._current_request_log_path()
+            server.start()
+            try:
+                self.assertEqual(self.post(server, {"model": "missing-model", "input": "hi"}), 401)
+                self.assertEqual(
+                    self.post(
+                        server,
+                        {"model": "missing-model", "input": "hi"},
+                        {"Authorization": "Bearer secret-key"},
+                    ),
+                    404,
+                )
+            finally:
+                server.stop()
+
+            entries = [json.loads(line) for line in request_log_path.read_text(encoding="utf-8").splitlines()]
+            error_entries = [json.loads(line) for line in error_log_path.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual(request_log_path.parent, error_log_path.parent)
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["status"], 401)
+        self.assertTrue(entries[0]["auth_failed"])
+        self.assertNotIn("request", entries[0])
+        self.assertEqual(entries[1]["status"], 404)
+        self.assertEqual(entries[1]["model"], "missing-model")
+        self.assertEqual(entries[1]["error"], "未启用模型：missing-model")
+        self.assertTrue(any(item["status"] == 404 for item in error_entries))
+
+    def test_relay_request_log_disabled_writes_nothing(self):
+        app = self.App({"projects": [], "relay": {"project_ids": []}})
+        server = RelayServer(app, "127.0.0.1", 0, request_logging_enabled=False)
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"),
+            patch("ai_probe.relay.RELAY_REQUEST_LOG", Path(temp_dir) / "relay-requests.jsonl"),
+        ):
+            request_log_path = server._current_request_log_path()
+            server.start()
+            try:
+                self.assertEqual(self.post(server, {"model": "missing-model", "input": "hi"}), 404)
+            finally:
+                server.stop()
+
+            self.assertFalse(request_log_path.exists())
+
+    def test_relay_request_log_keeps_only_current_day_file(self):
+        app = self.App({"projects": [], "relay": {"project_ids": []}})
+        server = RelayServer(app, "127.0.0.1", 0)
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"),
+            patch("ai_probe.relay.RELAY_REQUEST_LOG", Path(temp_dir) / "relay-requests.jsonl"),
+        ):
+            stale_path = Path(temp_dir) / "relay-requests-2000-01-01.jsonl"
+            stale_path.write_text('{"stale": true}\n', encoding="utf-8")
+            legacy_path = Path(temp_dir) / "relay-requests.jsonl"
+            legacy_path.write_text('{"legacy": true}\n', encoding="utf-8")
+
+            class Handler:
+                _relay_request_context = {}
+
+            server.log_request(Handler(), 200)
+
+            self.assertFalse(stale_path.exists())
+            self.assertFalse(legacy_path.exists())
+
+    def test_relay_debug_capture_records_full_payloads_and_redacts_secrets(self):
+        project = {
+            "id": "project-test",
+            "name": "test",
+            "base_url": "https://example.test/v1",
+            "api_key": "upstream-secret",
+            "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
+            "proxy_url": "",
+            "skip_ssl_verify": False,
+            "api_mode": "responses",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "gpt-test", "api_key_id": "key-test"}],
+        }
+        app = self.App({"projects": [project], "relay": {"project_ids": ["project-test"]}})
+        server = RelayServer(
+            app, "127.0.0.1", 0, error_logging_enabled=True, request_logging_enabled=True, request_debug_capture=True
+        )
+
+        upstream_raw = json.dumps(
+            {
+                "id": "resp-x",
+                "object": "response",
+                "status": "completed",
+                "output": [{"type": "message", "role": "assistant", "content": []}],
+                "usage": {"input_tokens": 5, "output_tokens": 3},
+            }
+        )
+
+        class UpstreamResponse:
+            ok = True
+            status_code = 200
+            headers = {
+                "Content-Type": "application/json",
+                "x-request-id": "trace-debug",
+                "Set-Cookie": "session=abc",
+            }
+
+            def iter_content(self, chunk_size=8192):
+                yield upstream_raw.encode("utf-8")
+
+            def close(self):
+                pass
+
+        captured_kwargs = {}
+
+        def fake_post(url, **kwargs):
+            captured_kwargs.update(kwargs)
+            return UpstreamResponse()
+
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"),
+            patch("ai_probe.relay.RELAY_REQUEST_LOG", Path(temp_dir) / "relay-requests.jsonl"),
+            patch("ai_probe.relay.requests.post", side_effect=fake_post),
+        ):
+            request_log_path = server._current_request_log_path()
+            server.start()
+            try:
+                status = self.post(
+                    server,
+                    {"model": "gpt-test", "input": "帮我写首诗"},
+                    {"Authorization": "Bearer relay-client-secret"},
+                )
+            finally:
+                server.stop()
+
+            entry = json.loads(request_log_path.read_text(encoding="utf-8").strip())
+
+        self.assertEqual(status, 200)
+        # 入站请求体完整保留（含中文正文）
+        incoming = entry["debug_incoming_body"]
+        self.assertEqual(incoming["json"]["input"], "帮我写首诗")
+        # 上游请求体完整保留
+        upstream_request = entry["attempts"][0]["upstream_request"]
+        self.assertEqual(upstream_request["json"]["input"], "帮我写首诗")
+        # 返回体完整保留
+        response_entry = entry["debug_response_body"]
+        self.assertEqual(response_entry["json"]["output"], [{"type": "message", "role": "assistant", "content": []}])
+        self.assertEqual(response_entry["json"]["usage"]["input_tokens"], 5)
+        # 响应头保留 trace 并脱敏 Cookie
+        self.assertEqual(entry["debug_response_headers"].get("x-request-id"), "trace-debug")
+        self.assertEqual(entry["debug_response_headers"].get("Set-Cookie"), "[REDACTED]")
+        # 客户端发来的 Authorization 头被脱敏
+        self.assertEqual(entry["debug_incoming_headers"].get("Authorization"), "[REDACTED]")
+        # 转发给上游的头里密钥同样脱敏
+        upstream_headers_entry = entry["attempts"][0]["upstream_request_headers"]
+        sent_auth = [value for key, value in upstream_headers_entry.items() if key.lower() == "authorization"]
+        self.assertTrue(sent_auth and all(value == "[REDACTED]" for value in sent_auth))
+        # usage 摘要照常记录
+        self.assertEqual(entry["usage"], {"input_tokens": 5, "output_tokens": 3, "cached_tokens": 0})
+
+    def test_relay_debug_capture_records_sse_stream(self):
+        project = {
+            "id": "project-test",
+            "name": "test",
+            "base_url": "https://example.test/v1",
+            "api_key": "upstream-secret",
+            "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
+            "proxy_url": "",
+            "skip_ssl_verify": False,
+            "api_mode": "responses",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "gpt-test", "api_key_id": "key-test"}],
+        }
+        app = self.App({"projects": [project], "relay": {"project_ids": ["project-test"]}})
+        server = RelayServer(
+            app, "127.0.0.1", 0, error_logging_enabled=False, request_logging_enabled=True, request_debug_capture=True
+        )
+
+        class UpstreamResponse:
+            ok = True
+            status_code = 200
+            headers = {"Content-Type": "text/event-stream"}
+
+            def iter_content(self, chunk_size=8192):
+                yield b'data: {"type":"response.created","response":{"id":"r-dbg","model":"gpt-test"}}\n\n'
+                yield b'data: {"type":"response.completed","response":{"id":"r-dbg","model":"gpt-test","usage":{"input_tokens":9,"output_tokens":4}}}\n\n'
+
+            def close(self):
+                pass
+
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"),
+            patch("ai_probe.relay.RELAY_REQUEST_LOG", Path(temp_dir) / "relay-requests.jsonl"),
+            patch("ai_probe.relay.requests.post", return_value=UpstreamResponse()),
+        ):
+            request_log_path = server._current_request_log_path()
+            server.start()
+            try:
+                status = self.post(server, {"model": "gpt-test", "input": "你好，请介绍一下你自己", "stream": True})
+            finally:
+                server.stop()
+
+            entry = json.loads(request_log_path.read_text(encoding="utf-8").strip())
+
+        self.assertEqual(status, 200)
+        body = entry["debug_response_body"]
+        self.assertIn('"type":"response.created"', body["text"])
+        self.assertIn('"type":"response.completed"', body["text"])
+        self.assertIn("你好", entry["debug_incoming_body"]["json"]["input"])
+
+    def test_relay_debug_capture_off_keeps_summary_only(self):
+        app = self.App({"projects": [], "relay": {"project_ids": []}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=False, request_logging_enabled=True)
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("ai_probe.relay.RELAY_ERROR_LOG", Path(temp_dir) / "relay-errors.jsonl"),
+            patch("ai_probe.relay.RELAY_REQUEST_LOG", Path(temp_dir) / "relay-requests.jsonl"),
+        ):
+            server.start()
+            try:
+                self.post(server, {"model": "missing-model", "input": "hi"})
+            finally:
+                server.stop()
+            log_text = ""
+            request_log_path = server._current_request_log_path()
+            if request_log_path.exists():
+                log_text = request_log_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("debug_incoming_body", log_text)
+        self.assertNotIn("debug_response_body", log_text)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from tkinter import VERTICAL, BooleanVar, Canvas, Toplevel, messagebox, ttk
 
 from ..projects import _project_keys
@@ -26,7 +27,6 @@ class RelayMixin:
         window.geometry("720x720")
         window.minsize(680, 560)
         window.configure(bg="#f2f2f7")
-        window.transient(self.root)
         window.protocol("WM_DELETE_WINDOW", self._close_relay_window)
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
@@ -69,6 +69,21 @@ class RelayMixin:
             variable=self.relay_error_logging_enabled,
             command=self._relay_error_logging_changed,
         ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        ttk.Checkbutton(
+            settings,
+            text="记录每个中转请求的转发结果、耗时与用量（与错误日志同目录，保存到 logs/）",
+            variable=self.relay_request_logging_enabled,
+            command=self._relay_request_logging_changed,
+        ).grid(row=4, column=0, columnspan=4, sticky="w")
+        ttk.Checkbutton(
+            settings,
+            text="调试模式：完整录制请求与返回报文（体积大，仅排查用）",
+            variable=self.relay_request_debug_capture,
+            command=self._relay_debug_capture_changed,
+        ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        self._mac_button(settings, "打开日志目录", self._open_relay_log_dir, surface="#ffffff").grid(
+            row=6, column=0, sticky="w", pady=(10, 0)
+        )
 
         projects_panel = ttk.Frame(config_tab, style="Panel.TFrame", padding=14)
         projects_panel.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
@@ -259,6 +274,30 @@ class RelayMixin:
             self.relay_server.error_logging_enabled = enabled
         self._save_store()
 
+    def _relay_request_logging_changed(self):
+        enabled = self.relay_request_logging_enabled.get()
+        self.store.setdefault("relay", {})["request_logging_enabled"] = enabled
+        if self.relay_server:
+            self.relay_server.request_logging_enabled = enabled
+        self._save_store()
+
+    def _relay_debug_capture_changed(self):
+        enabled = self.relay_request_debug_capture.get()
+        self.store.setdefault("relay", {})["request_debug_capture"] = enabled
+        if self.relay_server:
+            self.relay_server.request_debug_capture = enabled
+        self._save_store()
+
+    def _open_relay_log_dir(self):
+        from ..config import RELAY_ERROR_LOG
+
+        path = RELAY_ERROR_LOG.parent
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(path))
+        except OSError as exc:
+            messagebox.showerror("日志目录", f"无法打开目录：{path}\n{exc}", parent=self.relay_window)
+
     def _save_relay_config(self) -> bool:
         host = self.relay_host.get().strip() or "127.0.0.1"
         try:
@@ -276,6 +315,8 @@ class RelayMixin:
             "api_key": self.relay_key.get().strip(),
             "project_ids": project_ids,
             "error_logging_enabled": self.relay_error_logging_enabled.get(),
+            "request_logging_enabled": self.relay_request_logging_enabled.get(),
+            "request_debug_capture": self.relay_request_debug_capture.get(),
         }
         self.relay_host.set(host)
         self.relay_port.set(str(port))
@@ -306,6 +347,8 @@ class RelayMixin:
                 relay["port"],
                 relay["api_key"],
                 relay["error_logging_enabled"],
+                relay["request_logging_enabled"],
+                relay["request_debug_capture"],
             )
             server.start()
         except OSError as exc:

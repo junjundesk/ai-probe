@@ -756,4 +756,6 @@ class ModelsMixin:
         if self.relay_server:
             self.relay_server.stop()
             self.relay_server = None
+        if getattr(self, "tray", None):
+            self.tray.stop()
         self.root.destroy()

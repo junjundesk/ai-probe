@@ -12,7 +12,6 @@ except ImportError:
 
 from .config import load_or_create_config_key
 from .edit_context import install_edit_context_menu
-from .ui import ProbeApp
 
 
 def main() -> None:
@@ -32,7 +31,20 @@ def main() -> None:
     if config_key is None:
         root.destroy()
         return
+    if "--lightweight" in sys.argv:
+        from .relay_only import RelayOnlyApp
+
+        try:
+            RelayOnlyApp(root, config_key)
+        except RuntimeError as exc:
+            messagebox.showerror("轻量模式", str(exc), parent=root)
+            root.destroy()
+            return
+        root.mainloop()
+        return
     try:
+        from .ui import ProbeApp
+
         ProbeApp(root, config_key)
     except RuntimeError as exc:
         messagebox.showerror("启动失败", str(exc), parent=root)

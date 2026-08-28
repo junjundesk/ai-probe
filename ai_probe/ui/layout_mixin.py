@@ -37,11 +37,14 @@ class LayoutMixin:
         for index, color in enumerate(("#ff5f57", "#febc2e", "#28c840")):
             traffic.create_oval(4 + index * 15, 5, 14 + index * 15, 15, fill=color, outline=color)
         ttk.Label(toolbar, text="AI Probe", style="ToolbarTitle.TLabel").grid(row=0, column=1, sticky="w")
-        self._mac_button(toolbar, "本地中转", self._open_relay_window, kind="primary", surface="#ffffff").grid(
+        self._mac_button(toolbar, "最小化", self._minimize_to_tray, surface="#ffffff", width=6).grid(
             row=0, column=2, sticky="e", padx=(8, 0)
         )
-        ttk.Label(toolbar, text="多项目测活", style="ToolbarMuted.TLabel").grid(
+        self._mac_button(toolbar, "本地中转", self._open_relay_window, kind="primary", surface="#ffffff").grid(
             row=0, column=3, sticky="e", padx=(8, 0)
+        )
+        ttk.Label(toolbar, text="多项目测活", style="ToolbarMuted.TLabel").grid(
+            row=0, column=4, sticky="e", padx=(8, 0)
         )
         ttk.Separator(self.root, orient=HORIZONTAL).grid(row=0, column=0, columnspan=2, sticky="se")
 

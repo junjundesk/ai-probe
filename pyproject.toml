@@ -27,12 +27,17 @@ classifiers = [
 dependencies = [
     "cryptography>=42,<51",
     "requests[socks]>=2.31,<3",
+    "pystray>=0.19,<1; platform_system == 'Windows'",
 ]
 
 [project.optional-dependencies]
 dev = [
     "build>=1.2",
     "ruff>=0.8",
+]
+tray = [
+    "pystray>=0.19,<1",
+    "Pillow>=10,<13",
 ]
 
 [project.urls]

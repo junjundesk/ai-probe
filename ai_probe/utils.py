@@ -87,6 +87,8 @@ def normalize_proxy_url(value: str) -> str:
         return ""
     if any(char in value for char in "\r\n"):
         raise ValueError("HTTP 代理地址不能包含换行")
+    if "://" not in value and not value.startswith("//"):
+        value = f"http://{value}"
     parsed = urlsplit(value)
     if parsed.scheme.lower() not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
         raise ValueError("代理地址必须是 http(s)://、socks5:// 或 socks5h:// 地址")
