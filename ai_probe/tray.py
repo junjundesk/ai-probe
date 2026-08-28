@@ -15,6 +15,7 @@ from contextlib import suppress
 try:  # Keep tray support optional for headless/test environments.
     import pystray
     from PIL import Image, ImageDraw
+
     if sys.platform == "win32":
         # pystray selects the Windows backend through a dynamic import. Keep
         # the backend visible to static executable packagers such as Nuitka.

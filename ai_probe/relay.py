@@ -81,9 +81,7 @@ class _ResponsesStreamTracker:
             "object": "response",
             "created_at": self.created_at,
             "status": "incomplete" if error else "completed",
-            "incomplete_details": {"reason": "upstream_error", "message": error}
-            if error
-            else None,
+            "incomplete_details": {"reason": "upstream_error", "message": error} if error else None,
             "model": self.model,
             "output": [],
             "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
@@ -417,10 +415,9 @@ class RelayServer:
                         message=message,
                         **getattr(self, "_relay_error_context", {}),
                     )
-                if (
-                    getattr(self, "_relay_error_context", {}).get("incoming_mode") == "responses"
-                    and getattr(self, "_relay_error_context", {}).get("requested_stream")
-                ):
+                if getattr(self, "_relay_error_context", {}).get("incoming_mode") == "responses" and getattr(
+                    self, "_relay_error_context", {}
+                ).get("requested_stream"):
                     return self._stream_error(message, error_type)
                 if _request_mode(self.path.split("?", 1)[0]) == "anthropic":
                     return self._json(status, {"type": "error", "error": {"type": error_type, "message": message}})
@@ -535,7 +532,11 @@ class RelayServer:
                         available_model_count=len(owner.model_routes()),
                     )
                     owner.log_request(
-                        self, 404, model=model, available_model_count=len(owner.model_routes()), error=f"未启用模型：{model}"
+                        self,
+                        404,
+                        model=model,
+                        available_model_count=len(owner.model_routes()),
+                        error=f"未启用模型：{model}",
                     )
                     return self._error(404, f"未启用模型：{model}", "model_not_found")
                 incoming_mode = _request_mode(incoming_path)
@@ -633,9 +634,7 @@ class RelayServer:
                                     request_id,
                                 )
                             except Exception as exc:
-                                self._relay_request_context["delivery_error"] = (
-                                    f"{type(exc).__name__}: {exc}"
-                                )
+                                self._relay_request_context["delivery_error"] = f"{type(exc).__name__}: {exc}"
                                 raise
                             owner.log_request(
                                 self,
@@ -704,9 +703,7 @@ class RelayServer:
                                         request_id,
                                     )
                                 except Exception as exc:
-                                    self._relay_request_context["delivery_error"] = (
-                                        f"{type(exc).__name__}: {exc}"
-                                    )
+                                    self._relay_request_context["delivery_error"] = f"{type(exc).__name__}: {exc}"
                                     raise
                                 owner.log_request(
                                     self,
@@ -1291,12 +1288,24 @@ class RelayServer:
         if not converted:
             if requested_stream:
                 RelayServer.passthrough_stream(
-                    self.app, handler, response, upstream_mode, project, model, server=self,
+                    self.app,
+                    handler,
+                    response,
+                    upstream_mode,
+                    project,
+                    model,
+                    server=self,
                     debug_capture=self.request_debug_capture,
                 )
             else:
                 RelayServer.passthrough_json(
-                    self.app, handler, response, upstream_mode, project, model, server=self,
+                    self.app,
+                    handler,
+                    response,
+                    upstream_mode,
+                    project,
+                    model,
+                    server=self,
                     debug_capture=self.request_debug_capture,
                 )
             return
@@ -1399,12 +1408,8 @@ class RelayServer:
                 context = handler._relay_request_context
                 context["debug_response_headers"] = self._debug_headers(response.headers)
                 context["debug_response_body"] = {
-                    "upstream_events": self._sanitize_debug_value(
-                        upstream_sink.decode("utf-8", "replace")
-                    ),
-                    "client_output": self._sanitize_debug_value(
-                        client_sink.decode("utf-8", "replace")
-                    ),
+                    "upstream_events": self._sanitize_debug_value(upstream_sink.decode("utf-8", "replace")),
+                    "client_output": self._sanitize_debug_value(client_sink.decode("utf-8", "replace")),
                 }
             response.close()
             self.note_request_usage(

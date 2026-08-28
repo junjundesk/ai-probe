@@ -75,9 +75,7 @@ class RelayOnlyApp:
         relay = self.store.get("relay", {})
         enabled = set(relay.get("project_ids", []))
         model_count = sum(
-            len(project.get("models", []))
-            for project in self.store.get("projects", [])
-            if project.get("id") in enabled
+            len(project.get("models", [])) for project in self.store.get("projects", []) if project.get("id") in enabled
         )
         if not enabled or not model_count:
             self._log("轻量模式未启动中转：请先在主界面启用接口并添加模型")
