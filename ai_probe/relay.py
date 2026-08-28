@@ -1193,6 +1193,20 @@ class RelayServer:
         handler.close_connection = True
 
     @staticmethod
+    def _normalize_usage(
+        upstream_mode: str, input_tokens: int, output_tokens: int, cached_tokens: int
+    ) -> tuple[int, int, int]:
+        """Fold Anthropic cache-read tokens into the input total so the cache ratio stays <= 100%.
+
+        OpenAI 的 input_tokens 已包含缓存命中;Anthropic 的 input_tokens 则排除
+        cache_read_input_tokens。统一口径:Anthropic 上游把命中数折回 input,让
+        缓存率 = cached / input 在各协议下都正确。
+        """
+        if upstream_mode == "anthropic":
+            input_tokens = int(input_tokens or 0) + max(0, int(cached_tokens or 0))
+        return input_tokens, output_tokens, cached_tokens
+
+    @staticmethod
     def passthrough_json(app, handler, response, upstream_mode, project, model, server=None, debug_capture=False):
         try:
             body = b"".join(response.iter_content(chunk_size=65536))
@@ -1208,6 +1222,9 @@ class RelayServer:
             payload = None
         if isinstance(payload, dict):
             input_tokens, output_tokens, cached_tokens = extract_usage_tokens(payload.get("usage"), upstream_mode)
+        input_tokens, output_tokens, cached_tokens = RelayServer._normalize_usage(
+            upstream_mode, input_tokens, output_tokens, cached_tokens
+        )
         if server is not None:
             server.note_request_usage(handler, input_tokens, output_tokens, cached_tokens)
         RelayServer._response_headers(
@@ -1268,6 +1285,9 @@ class RelayServer:
             handler._relay_request_context["debug_response_body"] = server._debug_body(bytes(debug_buf))
             handler._relay_request_context["debug_response_headers"] = server._debug_headers(response.headers)
         input_tokens, output_tokens, cached_tokens = collector.summary()
+        input_tokens, output_tokens, cached_tokens = RelayServer._normalize_usage(
+            upstream_mode, input_tokens, output_tokens, cached_tokens
+        )
         if server is not None:
             server.note_request_usage(handler, input_tokens, output_tokens, cached_tokens)
         app.record_relay_usage(project, model, input_tokens, output_tokens, cached_tokens)
@@ -1329,19 +1349,14 @@ class RelayServer:
             handler.end_headers()
             handler.wfile.write(raw)
             usage = result["usage"]
-            self.note_request_usage(
-                handler,
+            input_tokens, output_tokens, cached_tokens = RelayServer._normalize_usage(
+                upstream_mode,
                 usage.get("input_tokens", 0),
                 usage.get("output_tokens", 0),
                 usage.get("cached_tokens", 0),
             )
-            self.app.record_relay_usage(
-                project,
-                model,
-                usage.get("input_tokens", 0),
-                usage.get("output_tokens", 0),
-                usage.get("cached_tokens", 0),
-            )
+            self.note_request_usage(handler, input_tokens, output_tokens, cached_tokens)
+            self.app.record_relay_usage(project, model, input_tokens, output_tokens, cached_tokens)
             return
 
         handler.send_response(response.status_code)
@@ -1412,16 +1427,11 @@ class RelayServer:
                     "client_output": self._sanitize_debug_value(client_sink.decode("utf-8", "replace")),
                 }
             response.close()
-            self.note_request_usage(
-                handler,
+            input_tokens, output_tokens, cached_tokens = RelayServer._normalize_usage(
+                upstream_mode,
                 renderer.input_tokens,
                 renderer.output_tokens,
                 renderer.cached_tokens,
             )
-            self.app.record_relay_usage(
-                project,
-                model,
-                renderer.input_tokens,
-                renderer.output_tokens,
-                renderer.cached_tokens,
-            )
+            self.note_request_usage(handler, input_tokens, output_tokens, cached_tokens)
+            self.app.record_relay_usage(project, model, input_tokens, output_tokens, cached_tokens)

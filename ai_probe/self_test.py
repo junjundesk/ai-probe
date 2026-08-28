@@ -330,6 +330,14 @@ def self_test():
         b'data: {"type":"response.completed","response":{"usage":{"input_tokens":20,"output_tokens":4,"input_tokens_details":{"cached_tokens":8}}}}\n\n'
     )
     assert responses_collector.summary() == (20, 4, 8)
+    normalize_usage = RelayServer._normalize_usage
+    # Anthropic 上游:input_tokens 不含缓存命中,折回后缓存率 = cached / input <= 100%
+    assert normalize_usage("anthropic", 7, 1, 6) == (13, 1, 6)
+    assert normalize_usage("anthropic", 0, 1, 50) == (50, 1, 50)
+    # OpenAI 口径:input_tokens 已含缓存,保持原样
+    assert normalize_usage("chat", 100, 30, 80) == (100, 30, 80)
+    assert normalize_usage("responses", 100, 30, 40) == (100, 30, 40)
+    assert format_cache_summary(13, 6) == "46.2%/6"
     with tempfile.TemporaryDirectory() as temp_dir:
         stats = UsageStats(Path(temp_dir) / "usage.json")
         stats.record({"id": "p1", "name": "AI项目"}, "gpt-test", 100, 40, 30)
