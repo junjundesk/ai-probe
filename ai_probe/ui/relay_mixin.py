@@ -234,9 +234,7 @@ class RelayMixin:
         }
         query = self.relay_project_search.get().strip().casefold()
         projects = [
-            project
-            for project in all_projects
-            if not query or query in str(project.get("name", "")).casefold()
+            project for project in all_projects if not query or query in str(project.get("name", "")).casefold()
         ]
         projects.sort(
             key=lambda project: (

@@ -32,6 +32,14 @@ docs: document local data directory
 
 常见类型包括 `feat`、`fix`、`docs`、`test`、`refactor`、`chore`。
 
+提交前置检查钩子位于 `.githooks/pre-commit`，首次克隆后在 PowerShell 中安装到本地仓库：
+
+```powershell
+Copy-Item .githooks\pre-commit .git\hooks\pre-commit
+```
+
+钩子会自动执行 Ruff 静态检查、格式检查、Python 编译检查、完整单元测试和 self-test；任一检查失败都会阻止提交。
+
 ## 测试
 
 提交前至少运行：
