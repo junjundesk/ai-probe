@@ -116,6 +116,7 @@ class OpenAIClient:
             }
 
         started = time.perf_counter()
+        deadline = started + PROBE_TIMEOUT
         first_event_ms = None
         first_token_ms = None
         probe_reply_parts = []
@@ -136,6 +137,8 @@ class OpenAIClient:
                     raise RuntimeError(f"HTTP {response.status_code}: {error_message_from_response(response)}")
                 response.encoding = "utf-8"
                 for raw_line in response.iter_lines(decode_unicode=True):
+                    if time.perf_counter() >= deadline:
+                        raise TimeoutError(f"测活超时（{PROBE_TIMEOUT:.0f}s 未完成）")
                     if raw_line is None:
                         continue
                     line = raw_line.strip()

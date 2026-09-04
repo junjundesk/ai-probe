@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from ai_probe.client import OpenAIClient
 from ai_probe.projects import client_from_project, new_project
@@ -32,6 +32,22 @@ class SSLVerificationTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIs(request_post.call_args.kwargs["verify"], False)
+
+    def test_probe_has_an_absolute_timeout(self):
+        response = MagicMock(ok=True)
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.iter_lines.return_value = iter(['data: {"type":"response.output_text.delta","delta":"ok"}'])
+        with (
+            patch("ai_probe.client.PROBE_TIMEOUT", 1.0),
+            patch("ai_probe.client.time.perf_counter", side_effect=[0.0, 1.1, 1.1]),
+            patch("ai_probe.client.requests.post", return_value=response),
+        ):
+            result = OpenAIClient("https://example.com", "key", "responses").probe("model")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "不可用")
+        self.assertEqual(result["error"], "测活超时（1s 未完成）")
 
     def test_project_defaults_to_ssl_verification(self):
         project = new_project()
