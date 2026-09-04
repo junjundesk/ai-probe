@@ -385,7 +385,7 @@ class RelayServer:
         self._lock = threading.Lock()
         self._log_lock = threading.Lock()
         self._rr = {}
-        self._model_routes_cache = None
+        self._routes = None
         self._responses_function_only = set()
 
     def start(self):
@@ -1099,24 +1099,33 @@ class RelayServer:
         )
 
     def model_routes(self) -> dict[str, list[dict]]:
-        with self._lock:
-            if self._model_routes_cache is None:
-                relay = self.app.store.get("relay", {})
-                enabled = set(relay.get("project_ids", []))
-                result = {}
-                for project in self.app.store.get("projects", []):
-                    if project.get("id") not in enabled:
-                        continue
-                    for item in project.get("models", []):
-                        model = str(item.get("id", "")).strip() if isinstance(item, dict) else str(item).strip()
-                        if model:
-                            result.setdefault(model, []).append(project)
-                self._model_routes_cache = result
-            return self._model_routes_cache
+        # 免锁快照：读侧直接拿当前路由表引用；只有缓存被置空时才在锁内重建一次，
+        # 避免请求线程在热路径上争用同一把锁。返回值只允许被调用方只读使用。
+        routes = self._routes
+        if routes is None:
+            with self._lock:
+                routes = self._routes
+                if routes is None:
+                    routes = self._build_routes()
+                    self._routes = routes
+        return routes
+
+    def _build_routes(self) -> dict[str, list[dict]]:
+        relay = self.app.store.get("relay", {})
+        enabled = set(relay.get("project_ids", []))
+        result = {}
+        for project in self.app.store.get("projects", []):
+            if project.get("id") not in enabled:
+                continue
+            for item in project.get("models", []):
+                model = str(item.get("id", "")).strip() if isinstance(item, dict) else str(item).strip()
+                if model:
+                    result.setdefault(model, []).append(project)
+        return result
 
     def invalidate_routes(self):
-        with self._lock:
-            self._model_routes_cache = None
+        # UI 线程调用，无需加锁：只替换不可变快照指针，绝不等待请求线程持有的锁。
+        self._routes = None
 
     def ordered_routes(self, model: str, routes: list[dict]) -> list[dict]:
         with self._lock:

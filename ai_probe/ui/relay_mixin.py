@@ -88,7 +88,7 @@ class RelayMixin:
         projects_panel = ttk.Frame(config_tab, style="Panel.TFrame", padding=14)
         projects_panel.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
         projects_panel.grid_columnconfigure(0, weight=1)
-        projects_panel.grid_rowconfigure(2, weight=1)
+        projects_panel.grid_rowconfigure(3, weight=1)
         projects_header = ttk.Frame(projects_panel, style="Panel.TFrame")
         projects_header.grid(row=0, column=0, sticky="ew")
         projects_header.grid_columnconfigure(0, weight=1)
@@ -99,12 +99,16 @@ class RelayMixin:
         self._mac_button(projects_header, "清空", self._clear_relay_projects, surface="#ffffff", width=5).grid(
             row=0, column=2
         )
+        search_bar = ttk.Frame(projects_panel, style="Panel.TFrame")
+        search_bar.grid(row=1, column=0, sticky="ew", pady=(9, 4))
+        search_bar.grid_columnconfigure(0, weight=1)
+        ttk.Entry(search_bar, textvariable=self.relay_project_search).grid(row=0, column=0, sticky="ew")
         ttk.Label(projects_panel, text="同名模型会自动轮询，并使用每个模型绑定的密钥", style="Muted.TLabel").grid(
-            row=1, column=0, sticky="w", pady=(3, 8)
+            row=2, column=0, sticky="w", pady=(3, 8)
         )
 
         list_host = ttk.Frame(projects_panel, style="Panel.TFrame")
-        list_host.grid(row=2, column=0, sticky="nsew")
+        list_host.grid(row=3, column=0, sticky="nsew")
         list_host.grid_columnconfigure(0, weight=1)
         list_host.grid_rowconfigure(0, weight=1)
         self.relay_projects_canvas = Canvas(
@@ -182,14 +186,17 @@ class RelayMixin:
         footer.grid_columnconfigure(0, weight=1)
         ttk.Label(footer, textvariable=self.relay_url, style="Panel.TLabel").grid(row=0, column=0, sticky="w")
         self._mac_button(footer, "复制地址", self._copy_relay_url, surface="#ffffff").grid(row=0, column=1, padx=(8, 4))
+        self._mac_button(footer, "复制 localhost", self._copy_localhost_relay_url, surface="#ffffff").grid(
+            row=0, column=2, padx=(4, 4)
+        )
         self.relay_stop_button = self._mac_button(
             footer, "停止", self._stop_relay, kind="danger", surface="#ffffff", width=6
         )
-        self.relay_stop_button.grid(row=0, column=2, padx=(4, 4))
+        self.relay_stop_button.grid(row=0, column=3, padx=(4, 4))
         self.relay_start_button = self._mac_button(
             footer, "启动中转", self._start_relay, kind="primary", surface="#ffffff"
         )
-        self.relay_start_button.grid(row=0, column=3, padx=(4, 0))
+        self.relay_start_button.grid(row=0, column=4, padx=(4, 0))
         self._update_relay_controls()
 
     def _bind_relay_project_wheel(self, widget):
@@ -208,6 +215,9 @@ class RelayMixin:
         return "break"
 
     def _close_relay_window(self):
+        if self._relay_stats_refresh_after is not None:
+            self.root.after_cancel(self._relay_stats_refresh_after)
+            self._relay_stats_refresh_after = None
         if self.relay_window:
             self.relay_window.destroy()
         self.relay_window = None
@@ -218,10 +228,24 @@ class RelayMixin:
         for child in self.relay_projects_frame.winfo_children():
             child.destroy()
         enabled = set(self.store.get("relay", {}).get("project_ids", []))
-        self.relay_project_vars = {}
-        for row, project in enumerate(self.store.get("projects", [])):
-            variable = BooleanVar(value=project.get("id") in enabled)
-            self.relay_project_vars[project["id"]] = variable
+        all_projects = list(self.store.get("projects", []))
+        self.relay_project_vars = {
+            project["id"]: BooleanVar(value=project.get("id") in enabled) for project in all_projects
+        }
+        query = self.relay_project_search.get().strip().casefold()
+        projects = [
+            project
+            for project in all_projects
+            if not query or query in str(project.get("name", "")).casefold()
+        ]
+        projects.sort(
+            key=lambda project: (
+                project.get("id") not in enabled,
+                str(project.get("name", "")).casefold(),
+            )
+        )
+        for row, project in enumerate(projects):
+            variable = self.relay_project_vars[project["id"]]
             model_count = len(project.get("models", []))
             key_count = len(_project_keys(project))
             text = f"{project.get('name', '未命名项目')}  ·  {key_count} 个密钥  ·  {model_count} 个模型  ·  {project.get('api_mode', 'chat')}"
@@ -234,6 +258,9 @@ class RelayMixin:
             self._bind_relay_project_wheel(check)
             check.grid(row=row, column=0, sticky="w", pady=4)
 
+    def _relay_project_search_changed(self, *_):
+        self._refresh_relay_projects()
+
     def _select_all_relay_projects(self):
         for variable in self.relay_project_vars.values():
             variable.set(True)
@@ -244,6 +271,21 @@ class RelayMixin:
             variable.set(False)
         self._relay_selection_changed()
 
+    def _schedule_relay_save(self):
+        """延迟合并中继页配置落盘：内存与运行时属性即时生效，写盘最多每 400ms 一次。"""
+        if self.relay_save_after is not None:
+            self.root.after_cancel(self.relay_save_after)
+        self.relay_save_after = self.root.after(400, self._flush_relay_save)
+
+    def _flush_relay_save(self):
+        self.relay_save_after = None
+        self._save_store()
+
+    def _cancel_relay_save(self):
+        if self.relay_save_after is not None:
+            self.root.after_cancel(self.relay_save_after)
+            self.relay_save_after = None
+
     def _relay_selection_changed(self):
         if not self.relay_project_vars:
             return
@@ -251,42 +293,44 @@ class RelayMixin:
         relay["project_ids"] = [
             project_id for project_id, variable in self.relay_project_vars.items() if variable.get()
         ]
-        self._save_store()
         if self.relay_server:
+            # 运行时路由即时刷新（免锁，仅替换快照），避免勾选后模型需等落盘才生效。
+            self.relay_server.invalidate_routes()
             model_count = sum(
                 len(project.get("models", []))
                 for project in self.store.get("projects", [])
                 if project.get("id") in set(relay["project_ids"])
             )
             self.relay_status.set(f"运行中 · {model_count} 个模型")
+        self._schedule_relay_save()
 
     def _relay_key_changed(self, *_):
         key = self.relay_key.get().strip()
         self.store.setdefault("relay", {})["api_key"] = key
         if self.relay_server:
             self.relay_server.auth_key = key
-        self._save_store()
+        self._schedule_relay_save()
 
     def _relay_error_logging_changed(self):
         enabled = self.relay_error_logging_enabled.get()
         self.store.setdefault("relay", {})["error_logging_enabled"] = enabled
         if self.relay_server:
             self.relay_server.error_logging_enabled = enabled
-        self._save_store()
+        self._schedule_relay_save()
 
     def _relay_request_logging_changed(self):
         enabled = self.relay_request_logging_enabled.get()
         self.store.setdefault("relay", {})["request_logging_enabled"] = enabled
         if self.relay_server:
             self.relay_server.request_logging_enabled = enabled
-        self._save_store()
+        self._schedule_relay_save()
 
     def _relay_debug_capture_changed(self):
         enabled = self.relay_request_debug_capture.get()
         self.store.setdefault("relay", {})["request_debug_capture"] = enabled
         if self.relay_server:
             self.relay_server.request_debug_capture = enabled
-        self._save_store()
+        self._schedule_relay_save()
 
     def _open_relay_log_dir(self):
         from ..config import RELAY_ERROR_LOG
@@ -320,6 +364,7 @@ class RelayMixin:
         }
         self.relay_host.set(host)
         self.relay_port.set(str(port))
+        self._cancel_relay_save()
         self._save_store()
         return True
 
@@ -381,10 +426,19 @@ class RelayMixin:
         if not value:
             return
         url = value.split("：", 1)[-1]
+        self._copy_relay_address(url, "中转地址")
+
+    def _copy_localhost_relay_url(self):
+        if not self.relay_server:
+            return
+        url = f"http://localhost:{self.relay_server.port}/v1"
+        self._copy_relay_address(url, "localhost 中转地址")
+
+    def _copy_relay_address(self, url, label):
         self.root.clipboard_clear()
         self.root.clipboard_append(url)
         self.root.update_idletasks()
-        self.status.set(f"已复制中转地址：{url}")
+        self.status.set(f"已复制{label}：{url}")
 
     def _update_relay_controls(self):
         if not self.relay_window or not self.relay_window.winfo_exists():
@@ -400,6 +454,21 @@ class RelayMixin:
         ttk.Label(card, textvariable=variable, style="StatsValue.TLabel").pack(anchor="w", pady=(6, 0))
 
     def _refresh_relay_stats(self):
+        # 显式刷新（窗口打开、清空统计等）：取消防抖并立即重建。
+        if self._relay_stats_refresh_after is not None:
+            self.root.after_cancel(self._relay_stats_refresh_after)
+            self._relay_stats_refresh_after = None
+        self._relay_stats_flush()
+
+    def _queue_relay_stats_refresh(self):
+        # 每个转发请求完成后调用：合并到 300ms 内的一次刷新，避免高并发时整树被反复重建。
+        if not self.relay_window or not self.relay_window.winfo_exists():
+            return
+        if self._relay_stats_refresh_after is None:
+            self._relay_stats_refresh_after = self.root.after(300, self._relay_stats_flush)
+
+    def _relay_stats_flush(self):
+        self._relay_stats_refresh_after = None
         if not self.relay_window or not self.relay_window.winfo_exists():
             return
         day = self.usage_stats.snapshot()
@@ -446,7 +515,7 @@ class RelayMixin:
 
     def record_relay_usage(self, project, model, input_tokens, output_tokens, cached_tokens):
         self.usage_stats.record(project, model, input_tokens, output_tokens, cached_tokens)
-        self._post(self._refresh_relay_stats)
+        self._post(self._queue_relay_stats_refresh)
 
     def _clear_relay_stats(self):
         if not messagebox.askyesno("今日统计", "确定清空今日全部用量统计吗？", parent=self.relay_window):

@@ -54,6 +54,8 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.relay_stats_cache_rate = StringVar(value="-")
         self.relay_stats_input = StringVar(value="-")
         self.relay_stats_output = StringVar(value="-")
+        self.relay_save_after = None
+        self._relay_stats_refresh_after = None
         self.lightweight_mode = False
         self.tray = TrayController(
             root,
@@ -64,6 +66,7 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
 
         self.project_name = StringVar()
         self.project_search = StringVar()
+        self.relay_project_search = StringVar()
         self.base_url = StringVar()
         self.api_key = StringVar()
         self.proxy_url = StringVar()
@@ -85,6 +88,8 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.relay_status = StringVar(value="未启动")
         self.relay_url = StringVar(value="")
         self.relay_key.trace_add("write", self._relay_key_changed)
+        self.project_search.trace_add("write", self._project_search_changed)
+        self.relay_project_search.trace_add("write", self._relay_project_search_changed)
 
         self._configure_window()
         self._build_ui()

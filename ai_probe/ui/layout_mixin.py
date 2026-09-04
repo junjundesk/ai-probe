@@ -16,6 +16,7 @@ class LayoutMixin:
         self.remote_model_context_menu.add_command(label="复制模型名称", command=self._copy_context_model)
         self.project_model_context_menu = Menu(self.root, tearoff=False)
         self.project_model_context_menu.add_command(label="复制模型名称", command=self._copy_context_model)
+        self.project_model_context_menu.add_command(label="复制返回内容", command=self._copy_context_model_reply)
         self.project_model_context_menu.add_separator()
         self.project_model_context_menu.add_command(label="设置密钥...", command=self._assign_selected_model_key)
         self.project_model_context_menu.add_separator()
@@ -25,6 +26,7 @@ class LayoutMixin:
         self.project_context_menu.add_command(label="新增项目", command=self._new_project)
         self.project_context_menu.add_command(label="重命名项目", command=self._rename_context_project)
         self.project_context_menu.add_command(label="复制项目", command=self._copy_context_project)
+        self.project_context_menu.add_command(label="渠道复制", command=self._copy_context_channel)
         self.project_context_menu.add_command(label="删除当前项目", command=self._delete_context_project)
         self.project_context_menu.add_separator()
         self.project_context_menu.add_command(label="删除全部项目", command=self._delete_all_projects)
@@ -80,11 +82,7 @@ class LayoutMixin:
         project_search_bar.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         project_search_bar.grid_columnconfigure(0, weight=1)
         self.project_search_entry = ttk.Entry(project_search_bar, textvariable=self.project_search)
-        self.project_search_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        self.project_search_entry.bind("<Return>", self._search_projects)
-        self._mac_button(project_search_bar, "搜索", self._search_projects, surface="#f1f2f5", width=5).grid(
-            row=0, column=1
-        )
+        self.project_search_entry.grid(row=0, column=0, sticky="ew")
 
         self.project_list = Listbox(
             sidebar,

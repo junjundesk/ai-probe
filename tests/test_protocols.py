@@ -1258,5 +1258,31 @@ class RelayErrorLoggingTests(unittest.TestCase):
         self.assertNotIn("debug_response_body", log_text)
 
 
+class RelayRouteSnapshotTests(unittest.TestCase):
+    """UI 与请求线程共享路由表时的免锁快照语义。"""
+
+    class App:
+        def __init__(self, store):
+            self.store = store
+
+    def test_invalidate_rebuilds_snapshot_and_filters_disabled(self):
+        project = {"id": "p1", "name": "P1", "models": [{"id": "m1"}, {"id": "m2"}]}
+        app = self.App({"projects": [project], "relay": {"project_ids": ["p1"]}})
+        server = RelayServer(app, "127.0.0.1", 0)
+        first = server.model_routes()
+        self.assertEqual(set(first), {"m1", "m2"})
+
+        # invalidate 后懒重建得到新快照；旧引用仍可被并发中的调用方安全使用
+        server.invalidate_routes()
+        second = server.model_routes()
+        self.assertIsNot(second, first)
+        self.assertEqual(set(second), {"m1", "m2"})
+
+        # 关闭启用项目后，路由表即时反映（无需重启服务器）
+        app.store["relay"]["project_ids"] = []
+        server.invalidate_routes()
+        self.assertEqual(server.model_routes(), {})
+
+
 if __name__ == "__main__":
     unittest.main()

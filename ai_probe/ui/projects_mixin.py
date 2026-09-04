@@ -45,10 +45,10 @@ class ProjectsMixin:
         self.updating_projects = True
         self.project_list.delete(0, END)
         self.visible_project_ids.clear()
-        query = self.project_search.get().strip().lower()
+        query = self.project_search.get().strip().casefold()
         selected_index = None
         for project in self.store["projects"]:
-            if query and query not in project["name"].lower():
+            if query and query not in project["name"].casefold():
                 continue
             index = len(self.visible_project_ids)
             self.visible_project_ids.append(project["id"])
@@ -63,13 +63,8 @@ class ProjectsMixin:
         if load_form:
             self._load_current_project()
 
-    def _search_projects(self, _event=None):
-        self._commit_form()
+    def _project_search_changed(self, *_):
         self._refresh_project_list(load_form=False)
-        count = len(self.visible_project_ids)
-        query = self.project_search.get().strip()
-        self.status.set(f"项目搜索：{count} 个结果" if query else f"显示全部项目：{count} 个")
-        return "break"
 
     def _load_current_project(self):
         project = self._project()
@@ -304,6 +299,7 @@ class ProjectsMixin:
         self.project_context_menu.entryconfigure(1, state=row_state)
         self.project_context_menu.entryconfigure(2, state=row_state)
         self.project_context_menu.entryconfigure(3, state=row_state)
+        self.project_context_menu.entryconfigure(4, state=row_state)
         try:
             self.project_context_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -369,6 +365,29 @@ class ProjectsMixin:
         self._save_store()
         self.status.set(f"已复制项目：{duplicate['name']}")
         self._log(f"复制项目：{project['name']} -> {duplicate['name']}")
+
+    def _copy_context_channel(self):
+        project = self._project(self.context_project_id)
+        if not project:
+            return
+        self._commit_form()
+        project = self._project(self.context_project_id)
+        if not project:
+            return
+
+        url = str(project.get("base_url", "")).strip()
+        key = str(project.get("api_key", "")).strip()
+        if not url or not key:
+            self.status.set("渠道复制失败：项目缺少地址或密钥")
+            return
+        channel = {"_type": "newapi_channel_conn", "key": key, "url": url}
+        value = json.dumps(channel, ensure_ascii=False, separators=(",", ":"))
+        self.root.clipboard_clear()
+        self.root.clipboard_append(value)
+        self.root.update_idletasks()
+        name = project.get("name", "未命名项目")
+        self.status.set(f"已复制渠道：{name}")
+        self._log(f"复制渠道：{name}")
 
     def _delete_context_project(self):
         if not self.context_project_id:

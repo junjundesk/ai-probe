@@ -348,8 +348,9 @@ class ModelsMixin:
         self.context_model_id = model_id
         row_state = "normal" if model_id else "disabled"
         self.project_model_context_menu.entryconfigure(0, state=row_state)
-        self.project_model_context_menu.entryconfigure(2, state=row_state)
-        self.project_model_context_menu.entryconfigure(4, state=row_state)
+        self.project_model_context_menu.entryconfigure(1, state=row_state)
+        self.project_model_context_menu.entryconfigure(3, state=row_state)
+        self.project_model_context_menu.entryconfigure(5, state=row_state)
         if model_id:
             self.model_tree.selection_set(item)
             self.model_tree.focus(item)
@@ -364,6 +365,29 @@ class ModelsMixin:
     def _copy_context_model(self):
         if self.context_model_id:
             self._copy_model_name(self.context_model_id)
+
+    def _copy_context_model_reply(self):
+        model_id = self.context_model_id
+        if not model_id:
+            return
+        project = self._project()
+        if not project:
+            return
+        model = next((item for item in project["models"] if item["id"] == model_id), None)
+        if not model:
+            return
+        detail = (
+            (model.get("error") or model.get("reply"))
+            if model.get("status") == "不可用"
+            else (model.get("reply") or model.get("error"))
+        ) or ""
+        if not detail:
+            self.status.set(f"暂无返回内容：{model_id}")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(detail)
+        self.root.update_idletasks()
+        self.status.set(f"已复制返回内容：{model_id}")
 
     def _remove_context_model(self):
         model_id = self.context_model_id
@@ -774,6 +798,9 @@ class ModelsMixin:
     def _on_close(self):
         if self.save_timer:
             self.root.after_cancel(self.save_timer)
+        if getattr(self, "relay_save_after", None):
+            self.root.after_cancel(self.relay_save_after)
+            self.relay_save_after = None
         self._commit_form()
         self.usage_stats.save()
         if self.relay_server:
