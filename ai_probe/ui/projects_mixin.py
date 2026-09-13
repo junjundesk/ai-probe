@@ -477,15 +477,17 @@ class ProjectsMixin:
                 return
 
             self._commit_form()
-            existing = {
-                (str(project.get("base_url", "")).rstrip("/"), str(project.get("api_key", "")).strip())
-                for project in self.store["projects"]
-            }
+            existing = {}
+            for project in self.store["projects"]:
+                signature = (str(project.get("base_url", "")).rstrip("/"), str(project.get("api_key", "")).strip())
+                existing.setdefault(signature, []).append(project["name"])
             existing_names = {project["name"] for project in self.store["projects"]}
             imported = []
+            duplicates = []
             for channel in channels:
                 signature = (channel["url"].rstrip("/"), channel["key"])
                 if signature in existing:
+                    duplicates.extend(existing[signature])
                     continue
                 host = urlsplit(channel["url"]).hostname or "导入渠道"
                 name = host
@@ -500,12 +502,17 @@ class ProjectsMixin:
                 if channel.get("_type"):
                     project["channel_type"] = channel["_type"]
                 self.store["projects"].append(project)
-                existing.add(signature)
+                existing[signature] = [name]
                 existing_names.add(name)
                 imported.append(project)
 
+            duplicate_details = "\n".join(f"- {name}" for name in dict.fromkeys(duplicates))
             if not imported:
-                messagebox.showinfo("渠道导入", "识别到的渠道均已存在，无需重复导入。", parent=window)
+                messagebox.showinfo(
+                    "渠道导入",
+                    f"识别到的渠道均已存在，无需重复导入。\n\n重复渠道：\n{duplicate_details}",
+                    parent=window,
+                )
                 return
             self.current_id = imported[0]["id"]
             self.store["selected_project_id"] = self.current_id
@@ -514,6 +521,13 @@ class ProjectsMixin:
             self._save_store()
             self.status.set(f"渠道导入完成：新增 {len(imported)} 个")
             self._log(f"渠道导入：新增 {len(imported)} 个，跳过 {len(channels) - len(imported)} 个")
+            if duplicates:
+                messagebox.showinfo(
+                    "渠道导入",
+                    f"新增 {len(imported)} 个渠道，跳过 {len(channels) - len(imported)} 个重复渠道。"
+                    f"\n\n重复渠道：\n{duplicate_details}",
+                    parent=window,
+                )
             window.destroy()
 
         self._mac_button(footer, "智能识别并导入", import_now, kind="primary", surface="#ffffff").grid(

@@ -1,5 +1,6 @@
 import json
 import unittest
+from contextlib import ExitStack
 from threading import Barrier
 from unittest.mock import Mock, patch
 
@@ -32,6 +33,70 @@ class ChannelCopyTests(unittest.TestCase):
         )
         mixin.root.clipboard_clear.assert_called_once_with()
         mixin.root.update_idletasks.assert_called_once_with()
+
+
+class ChannelImportTests(unittest.TestCase):
+    def test_duplicate_dialog_names_channels_without_exposing_keys(self):
+        cases = [
+            ("all duplicates", ["sk-existing"], 0, True),
+            ("partial duplicates", ["sk-existing", "sk-new"], 1, True),
+            ("different key", ["sk-new"], 1, False),
+            ("duplicates within batch", ["sk-new", "sk-new"], 1, True),
+            ("repeated existing channel", ["sk-existing", "sk-existing"], 0, True),
+        ]
+        for label, keys, added, has_duplicates in cases:
+            with self.subTest(label=label), ExitStack() as stack:
+                module = "ai_probe.ui.projects_mixin"
+                window = stack.enter_context(patch(f"{module}.Toplevel")).return_value
+                editor = stack.enter_context(patch(f"{module}.Text")).return_value
+                stack.enter_context(patch(f"{module}.ttk"))
+                showinfo = stack.enter_context(patch(f"{module}.messagebox.showinfo"))
+                editor.get.return_value = json.dumps([{"url": "https://example.test/v1", "key": key} for key in keys])
+                mixin = ProjectsMixin()
+                mixin.root = Mock()
+                mixin._commit_form = Mock()
+                mixin._save_store = Mock()
+                mixin._refresh_project_list = Mock()
+                mixin._log = Mock()
+                mixin.project_search = Mock()
+                mixin.status = Mock()
+                mixin._mac_button = Mock()
+                project = new_project("测试渠道")
+                project.update(base_url="https://example.test/v1/", api_key=" sk-existing ")
+                copied_project = new_project("测试渠道副本")
+                copied_project.update(base_url=project["base_url"], api_key=project["api_key"])
+                mixin.store = {"projects": [project, copied_project], "selected_project_id": project["id"]}
+                mixin.current_id = project["id"]
+
+                mixin._import_channels()
+                import_now = mixin._mac_button.call_args_list[0].args[2]
+                import_now()
+
+                self.assertEqual(len(mixin.store["projects"]), 2 + added)
+                if has_duplicates:
+                    showinfo.assert_called_once()
+                    message = showinfo.call_args.args[1]
+                    self.assertEqual(showinfo.call_args.kwargs["parent"], window)
+                    self.assertIn("重复渠道：", message)
+                    names = [project["name"], copied_project["name"]] if "sk-existing" in keys else ["example.test"]
+                    for name in names:
+                        self.assertEqual(message.splitlines().count(f"- {name}"), 1)
+                    for key in keys:
+                        self.assertNotIn(key, message)
+                else:
+                    showinfo.assert_not_called()
+                if added:
+                    mixin._save_store.assert_called_once_with()
+                    mixin._refresh_project_list.assert_called_once_with()
+                    self.assertEqual(mixin.current_id, mixin.store["projects"][2]["id"])
+                    window.destroy.assert_called_once_with()
+                    if has_duplicates:
+                        self.assertIn(f"新增 {added} 个渠道，跳过 {len(keys) - added} 个重复渠道。", message)
+                else:
+                    mixin._save_store.assert_not_called()
+                    mixin._refresh_project_list.assert_not_called()
+                    self.assertEqual(mixin.current_id, project["id"])
+                    window.destroy.assert_not_called()
 
 
 class ProjectSearchBehaviorTests(unittest.TestCase):
@@ -94,6 +159,38 @@ class ModelResultDisplayTests(unittest.TestCase):
         with patch("ai_probe.ui.models_mixin.messagebox.showinfo") as showinfo:
             mixin._show_model_detail()
         showinfo.assert_called_once_with("model", "连接失败")
+
+    def test_context_menu_sets_model_route_name(self):
+        mixin = ModelsMixin()
+        mixin.context_model_id = "gpt5.6-sol"
+        mixin.root = Mock()
+        mixin.status = Mock()
+        mixin._save_store = Mock()
+        mixin._refresh_models = Mock()
+        project = {"models": [{"id": "gpt5.6-sol", "route_name": ""}]}
+        mixin._project = lambda: project
+
+        with patch("ai_probe.ui.models_mixin.simpledialog.askstring", return_value="gpt-5.5"):
+            mixin._set_context_model_route_name()
+
+        self.assertEqual(project["models"][0]["route_name"], "gpt-5.5")
+        mixin._save_store.assert_called_once_with()
+        mixin._refresh_models.assert_called_once_with()
+
+    def test_context_menu_clears_model_route_name_when_empty(self):
+        mixin = ModelsMixin()
+        mixin.context_model_id = "gpt5.6-sol"
+        mixin.root = Mock()
+        mixin.status = Mock()
+        mixin._save_store = Mock()
+        mixin._refresh_models = Mock()
+        project = {"models": [{"id": "gpt5.6-sol", "route_name": "gpt-5.5"}]}
+        mixin._project = lambda: project
+
+        with patch("ai_probe.ui.models_mixin.simpledialog.askstring", return_value=""):
+            mixin._set_context_model_route_name()
+
+        self.assertEqual(project["models"][0]["route_name"], "")
 
     def test_context_menu_copies_full_probe_reply_or_error(self):
         mixin = ModelsMixin()

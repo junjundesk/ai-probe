@@ -1264,6 +1264,26 @@ class RelayRouteSnapshotTests(unittest.TestCase):
     class App:
         def __init__(self, store):
             self.store = store
+            self.usage_records = []
+
+        def _post(self, callback, *args):
+            callback(*args)
+
+        def _log(self, _message):
+            pass
+
+        def record_relay_usage(self, *args):
+            self.usage_records.append(args)
+
+    @staticmethod
+    def post(server, payload):
+        connection = HTTPConnection("127.0.0.1", server.port, timeout=3)
+        connection.request("POST", "/v1/chat/completions", json.dumps(payload), {"Content-Type": "application/json"})
+        response = connection.getresponse()
+        response.read()
+        status = response.status
+        connection.close()
+        return status
 
     def test_invalidate_rebuilds_snapshot_and_filters_disabled(self):
         project = {"id": "p1", "name": "P1", "models": [{"id": "m1"}, {"id": "m2"}]}
@@ -1282,6 +1302,48 @@ class RelayRouteSnapshotTests(unittest.TestCase):
         app.store["relay"]["project_ids"] = []
         server.invalidate_routes()
         self.assertEqual(server.model_routes(), {})
+
+    def test_model_route_name_exposes_alias_and_resolves_actual_model(self):
+        project = {
+            "id": "p1",
+            "name": "P1",
+            "base_url": "https://example.test/v1",
+            "api_key": "upstream-secret",
+            "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
+            "proxy_url": "",
+            "skip_ssl_verify": False,
+            "api_mode": "chat",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "gpt5.6-sol", "route_name": "gpt-5.5", "api_key_id": "key-test"}],
+        }
+        app = self.App({"projects": [project], "relay": {"project_ids": ["p1"]}})
+        server = RelayServer(app, "127.0.0.1", 0)
+        self.assertEqual(set(server.model_routes()), {"gpt-5.5"})
+
+        class UpstreamResponse:
+            ok = True
+            status_code = 200
+            headers = {"Content-Type": "application/json"}
+            content = b'{"id":"chatcmpl-test","choices":[],"usage":{}}'
+
+            def iter_content(self, chunk_size=8192):
+                yield self.content
+
+            def close(self):
+                pass
+
+        with patch("ai_probe.relay.requests.post", return_value=UpstreamResponse()) as upstream_post:
+            server.start()
+            try:
+                self.assertEqual(
+                    self.post(server, {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}),
+                    200,
+                )
+            finally:
+                server.stop()
+
+        self.assertEqual(upstream_post.call_args.kwargs["json"]["model"], "gpt5.6-sol")
 
 
 if __name__ == "__main__":

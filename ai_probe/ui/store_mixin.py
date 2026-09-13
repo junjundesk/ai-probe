@@ -98,6 +98,7 @@ class StoreMixin:
                 if project_key_by_id(project, key_id) is None:
                     key_id = default_key_id
                 item["api_key_id"] = key_id
+                item["route_name"] = str(item.get("route_name") or "").strip()
                 models.append(item)
             project["models"] = models
         if not data["projects"]:

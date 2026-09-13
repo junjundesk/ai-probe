@@ -17,6 +17,9 @@ class LayoutMixin:
         self.project_model_context_menu = Menu(self.root, tearoff=False)
         self.project_model_context_menu.add_command(label="复制模型名称", command=self._copy_context_model)
         self.project_model_context_menu.add_command(label="复制返回内容", command=self._copy_context_model_reply)
+        self.project_model_context_menu.add_command(
+            label="设置渠道模型名...", command=self._set_context_model_route_name
+        )
         self.project_model_context_menu.add_separator()
         self.project_model_context_menu.add_command(label="设置密钥...", command=self._assign_selected_model_key)
         self.project_model_context_menu.add_separator()

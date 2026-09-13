@@ -7,7 +7,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime
-from tkinter import END, messagebox
+from tkinter import END, messagebox, simpledialog
 
 from ..client import OpenAIClient
 from ..config import MAX_WORKERS, PROBE_TIMEOUT, PROBE_UI_BATCH_SIZE
@@ -256,6 +256,7 @@ class ModelsMixin:
                     {
                         "id": model_id,
                         "api_key_id": api_key_id,
+                        "route_name": "",
                         "status": "未测试",
                         "first_ms": None,
                         "total_ms": None,
@@ -349,8 +350,9 @@ class ModelsMixin:
         row_state = "normal" if model_id else "disabled"
         self.project_model_context_menu.entryconfigure(0, state=row_state)
         self.project_model_context_menu.entryconfigure(1, state=row_state)
-        self.project_model_context_menu.entryconfigure(3, state=row_state)
-        self.project_model_context_menu.entryconfigure(5, state=row_state)
+        self.project_model_context_menu.entryconfigure(2, state=row_state)
+        self.project_model_context_menu.entryconfigure(4, state=row_state)
+        self.project_model_context_menu.entryconfigure(6, state=row_state)
         if model_id:
             self.model_tree.selection_set(item)
             self.model_tree.focus(item)
@@ -388,6 +390,33 @@ class ModelsMixin:
         self.root.clipboard_append(detail)
         self.root.update_idletasks()
         self.status.set(f"已复制返回内容：{model_id}")
+
+    def _set_context_model_route_name(self):
+        model_id = self.context_model_id
+        if not model_id:
+            return
+        project = self._project()
+        if not project:
+            return
+        model = next((item for item in project["models"] if item["id"] == model_id), None)
+        if not model:
+            return
+        route_name = simpledialog.askstring(
+            "设置渠道模型名",
+            "对外模型名（留空恢复原模型名）：",
+            initialvalue=str(model.get("route_name") or ""),
+            parent=self.root,
+        )
+        if route_name is None:
+            return
+        route_name = route_name.strip()
+        if "\r" in route_name or "\n" in route_name:
+            messagebox.showerror("设置渠道模型名", "模型名不能包含换行")
+            return
+        model["route_name"] = route_name
+        self._save_store()
+        self._refresh_models()
+        self.status.set(f"已设置渠道模型名：{model_id} → {route_name or model_id}")
 
     def _remove_context_model(self):
         model_id = self.context_model_id
@@ -536,6 +565,12 @@ class ModelsMixin:
         project = self._project(project_id)
         if not project:
             return
+        route_names = {
+            model["id"]: model.get("route_name", "") for model in project.get("models", []) if model.get("route_name")
+        }
+        for model in available:
+            if model["id"] in route_names:
+                model["route_name"] = route_names[model["id"]]
         project["models"] = sorted(available, key=lambda item: item["id"].lower())
         self._flush_probe_save()
         if project_id == self.current_id:

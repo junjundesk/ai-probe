@@ -568,9 +568,10 @@ class RelayServer:
                     attempts.append(attempt)
                     try:
                         model_item = next(
-                            (item for item in project.get("models", []) if str(item.get("id", "")).strip() == model),
+                            (item for item in project.get("models", []) if owner.route_model_name(item) == model),
                             None,
                         )
+                        upstream_model = owner.actual_model_name(model_item) or model
                         client = client_from_project(
                             project,
                             api_key_id=model_item.get("api_key_id") if isinstance(model_item, dict) else None,
@@ -589,8 +590,10 @@ class RelayServer:
                             upstream_body = _convert_request(body, incoming_mode, client.api_mode)
                         else:
                             upstream_body = body
+                        if upstream_model != model:
+                            upstream_body = {**upstream_body, "model": upstream_model}
                         if client.api_mode == "responses":
-                            upstream_body = _prepare_responses_upstream_body(upstream_body, model)
+                            upstream_body = _prepare_responses_upstream_body(upstream_body, upstream_model)
                         if converted:
                             upstream_body["stream"] = True
                         if upstream_body.get("stream"):
@@ -606,6 +609,7 @@ class RelayServer:
                             )
                         attempt.update(
                             upstream_mode=client.api_mode,
+                            upstream_model=upstream_model,
                             upstream_url=f"{client.base_url}{path}",
                             converted=converted,
                         )
@@ -666,8 +670,10 @@ class RelayServer:
                             with owner._lock:
                                 owner._responses_function_only.add(project.get("id"))
                             compatible_body = _prepare_responses_upstream_body(
-                                _responses_custom_to_function(body), model
+                                _responses_custom_to_function(body), upstream_model
                             )
+                            if upstream_model != model:
+                                compatible_body["model"] = upstream_model
                             compatible_body["stream"] = True
                             compatibility_retry = {
                                 "converted": True,
@@ -1098,6 +1104,18 @@ class RelayServer:
             exception=str(exc),
         )
 
+    @staticmethod
+    def actual_model_name(model_item) -> str:
+        if not isinstance(model_item, dict):
+            return str(model_item or "").strip()
+        return str(model_item.get("id") or "").strip()
+
+    @classmethod
+    def route_model_name(cls, model_item) -> str:
+        if not isinstance(model_item, dict):
+            return cls.actual_model_name(model_item)
+        return str(model_item.get("route_name") or "").strip() or cls.actual_model_name(model_item)
+
     def model_routes(self) -> dict[str, list[dict]]:
         # 免锁快照：读侧直接拿当前路由表引用；只有缓存被置空时才在锁内重建一次，
         # 避免请求线程在热路径上争用同一把锁。返回值只允许被调用方只读使用。
@@ -1117,10 +1135,12 @@ class RelayServer:
         for project in self.app.store.get("projects", []):
             if project.get("id") not in enabled:
                 continue
+            seen_models = set()
             for item in project.get("models", []):
-                model = str(item.get("id", "")).strip() if isinstance(item, dict) else str(item).strip()
-                if model:
+                model = self.route_model_name(item)
+                if model and model not in seen_models:
                     result.setdefault(model, []).append(project)
+                    seen_models.add(model)
         return result
 
     def invalidate_routes(self):
