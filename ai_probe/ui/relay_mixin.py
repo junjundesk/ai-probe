@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from tkinter import VERTICAL, BooleanVar, Canvas, Toplevel, messagebox, ttk
+from tkinter.scrolledtext import ScrolledText
 
 from ..projects import _project_keys
 from ..relay import RelayServer
@@ -42,6 +43,32 @@ class RelayMixin:
         config_tab = ttk.Frame(notebook, style="Main.TFrame")
         stats_tab = ttk.Frame(notebook, style="Main.TFrame", padding=12)
         notebook.add(config_tab, text="中转配置")
+        prompt_tab = ttk.Frame(notebook, style="Main.TFrame", padding=14)
+        notebook.add(prompt_tab, text="全局提示词")
+        prompt_tab.grid_columnconfigure(0, weight=1)
+        prompt_tab.grid_rowconfigure(2, weight=1)
+        ttk.Label(prompt_tab, text="全局系统提示词", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            prompt_tab, text="留空（或仅空白）不启用；自动保存，修改后对新请求即时生效。", style="Muted.TLabel"
+        ).grid(row=1, column=0, sticky="w", pady=(6, 8))
+        prompt_text = ScrolledText(prompt_tab, wrap="word", height=8, undo=True)
+        prompt_text.grid(row=2, column=0, sticky="nsew")
+        prompt_text.insert("1.0", self.relay_system_prompt.get())
+        prompt_text.edit_modified(False)
+        prompt_text.bind("<<Modified>>", self._relay_prompt_text_changed)
+        ttk.Checkbutton(
+            prompt_tab,
+            text="拼接用户提示词（客户端传入的系统 / developer 提示词）",
+            variable=self.relay_append_user_prompt,
+            command=self._relay_prompt_settings_changed,
+        ).grid(row=3, column=0, sticky="w", pady=(10, 6))
+        ttk.Label(
+            prompt_tab,
+            text="开启：全局提示词在前，保留客户端提示词。关闭：替换客户端系统提示词。\n"
+            "正常用户提问、图片、历史对话及工具消息始终保留。",
+            style="Muted.TLabel",
+            wraplength=600,
+        ).grid(row=4, column=0, sticky="w")
         notebook.add(stats_tab, text="今日统计")
 
         config_tab.grid_columnconfigure(0, weight=1)
@@ -309,6 +336,23 @@ class RelayMixin:
             self.relay_server.auth_key = key
         self._schedule_relay_save()
 
+    def _relay_prompt_text_changed(self, event):
+        widget = event.widget
+        if not widget.edit_modified():
+            return
+        self.relay_system_prompt.set(widget.get("1.0", "end-1c"))
+        widget.edit_modified(False)
+        self._relay_prompt_settings_changed()
+
+    def _relay_prompt_settings_changed(self):
+        prompt = self.relay_system_prompt.get()
+        append = self.relay_append_user_prompt.get()
+        relay = self.store.setdefault("relay", {})
+        relay.update(system_prompt=prompt, append_user_prompt=append)
+        if self.relay_server:
+            self.relay_server.prompt_settings = (prompt, append)
+        self._schedule_relay_save()
+
     def _relay_error_logging_changed(self):
         enabled = self.relay_error_logging_enabled.get()
         self.store.setdefault("relay", {})["error_logging_enabled"] = enabled
@@ -359,6 +403,8 @@ class RelayMixin:
             "error_logging_enabled": self.relay_error_logging_enabled.get(),
             "request_logging_enabled": self.relay_request_logging_enabled.get(),
             "request_debug_capture": self.relay_request_debug_capture.get(),
+            "system_prompt": self.relay_system_prompt.get(),
+            "append_user_prompt": self.relay_append_user_prompt.get(),
         }
         self.relay_host.set(host)
         self.relay_port.set(str(port))
@@ -392,6 +438,8 @@ class RelayMixin:
                 relay["error_logging_enabled"],
                 relay["request_logging_enabled"],
                 relay["request_debug_capture"],
+                system_prompt=relay["system_prompt"],
+                append_user_prompt=relay["append_user_prompt"],
             )
             server.start()
         except OSError as exc:

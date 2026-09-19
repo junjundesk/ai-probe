@@ -29,6 +29,8 @@ class StoreMixin:
             "error_logging_enabled": True,
             "request_logging_enabled": True,
             "request_debug_capture": False,
+            "system_prompt": "",
+            "append_user_prompt": True,
         }
         return {
             "version": 2,
@@ -47,6 +49,8 @@ class StoreMixin:
             "error_logging_enabled": True,
             "request_logging_enabled": True,
             "request_debug_capture": False,
+            "system_prompt": "",
+            "append_user_prompt": True,
         }
         if not isinstance(data, dict) or not isinstance(data.get("projects"), list):
             raise ValueError("配置文件缺少有效的 projects 列表")
@@ -115,6 +119,8 @@ class StoreMixin:
         relay["error_logging_enabled"] = bool(relay.get("error_logging_enabled", True))
         relay["request_logging_enabled"] = bool(relay.get("request_logging_enabled", True))
         relay["request_debug_capture"] = bool(relay.get("request_debug_capture", False))
+        relay["system_prompt"] = str(relay.get("system_prompt") or "")
+        relay["append_user_prompt"] = bool(relay.get("append_user_prompt", True))
         data["version"] = 2
         return data
 

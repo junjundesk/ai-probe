@@ -89,6 +89,8 @@ class RelayOnlyApp:
                 bool(relay.get("error_logging_enabled", True)),
                 bool(relay.get("request_logging_enabled", True)),
                 bool(relay.get("request_debug_capture", False)),
+                system_prompt=str(relay.get("system_prompt", "")),
+                append_user_prompt=bool(relay.get("append_user_prompt", True)),
             )
             self.relay_server.start()
             self._log(f"轻量模式已启动本地中转：{self.relay_server.host}:{self.relay_server.port}")

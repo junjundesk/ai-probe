@@ -85,6 +85,8 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.relay_error_logging_enabled = BooleanVar(value=bool(relay.get("error_logging_enabled", True)))
         self.relay_request_logging_enabled = BooleanVar(value=bool(relay.get("request_logging_enabled", True)))
         self.relay_request_debug_capture = BooleanVar(value=bool(relay.get("request_debug_capture", False)))
+        self.relay_system_prompt = StringVar(value=str(relay.get("system_prompt", "")))
+        self.relay_append_user_prompt = BooleanVar(value=bool(relay.get("append_user_prompt", True)))
         self.relay_status = StringVar(value="未启动")
         self.relay_url = StringVar(value="")
         self.relay_key.trace_add("write", self._relay_key_changed)

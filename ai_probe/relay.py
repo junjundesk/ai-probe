@@ -327,6 +327,42 @@ def _prepare_responses_upstream_body(body: dict, model: str) -> dict:
     return _normalize_summary_responses_input(prepared)
 
 
+def _inject_system_prompt(body: dict, mode: str, prompt: str, append_user_prompt: bool = True) -> dict:
+    """Prepend global instructions, optionally retaining client system/developer prompts."""
+    if not prompt.strip():
+        return body
+    result = dict(body)
+    if mode == "anthropic":
+        original = body.get("system")
+        if append_user_prompt and isinstance(original, list):
+            result["system"] = [{"type": "text", "text": prompt}, *original]
+        else:
+            result["system"] = prompt + (
+                "\n\n" + original if append_user_prompt and isinstance(original, str) and original else ""
+            )
+    elif mode == "responses":
+        original = body.get("instructions")
+        result["instructions"] = prompt + (
+            "\n\n" + original if append_user_prompt and isinstance(original, str) and original else ""
+        )
+        if not append_user_prompt and isinstance(body.get("input"), list):
+            result["input"] = [
+                item
+                for item in body["input"]
+                if not (isinstance(item, dict) and item.get("role") in {"system", "developer"})
+            ]
+    else:
+        messages = body.get("messages", [])
+        if not isinstance(messages, list):
+            return body
+        result["messages"] = [{"role": "system", "content": prompt}] + [
+            item
+            for item in messages
+            if append_user_prompt or not (isinstance(item, dict) and item.get("role") in {"system", "developer"})
+        ]
+    return result
+
+
 class RelayServer:
     """Small local OpenAI-compatible router backed by enabled projects."""
 
@@ -372,6 +408,8 @@ class RelayServer:
         error_logging_enabled: bool = True,
         request_logging_enabled: bool = True,
         request_debug_capture: bool = False,
+        system_prompt: str = "",
+        append_user_prompt: bool = True,
     ):
         self.app = app
         self.host = host
@@ -380,6 +418,7 @@ class RelayServer:
         self.error_logging_enabled = bool(error_logging_enabled)
         self.request_logging_enabled = bool(request_logging_enabled)
         self.request_debug_capture = bool(request_debug_capture)
+        self.prompt_settings = (system_prompt, bool(append_user_prompt))
         self.httpd = None
         self.thread = None
         self._lock = threading.Lock()
@@ -540,6 +579,7 @@ class RelayServer:
                     )
                     return self._error(404, f"未启用模型：{model}", "model_not_found")
                 incoming_mode = _request_mode(incoming_path)
+                body = _inject_system_prompt(body, incoming_mode, *owner.prompt_settings)
                 requested_stream = bool(body.get("stream"))
                 custom_tool_names = _custom_tool_names(body) if incoming_mode == "responses" else set()
                 attempts = []
