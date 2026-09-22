@@ -17,6 +17,7 @@ from ..config import (
     save_config_key,
 )
 from ..projects import _project_keys, _sync_project_keys, new_project, project_key_by_id
+from .theme import SURFACE_CONTAINER_LOWEST
 
 
 class StoreMixin:
@@ -313,8 +314,8 @@ class StoreMixin:
             self.root.update_idletasks()
             self.status.set("解密密码已复制")
 
-        self._mac_button(body, "复制密钥", copy_key, surface="#ffffff").grid(row=2, column=1)
-        self._mac_button(body, "关闭", window.destroy, kind="primary", surface="#ffffff").grid(
+        self._mac_button(body, "复制密钥", copy_key, surface=SURFACE_CONTAINER_LOWEST).grid(row=2, column=1)
+        self._mac_button(body, "关闭", window.destroy, kind="primary", surface=SURFACE_CONTAINER_LOWEST).grid(
             row=3, column=0, columnspan=2, sticky="e", pady=(15, 0)
         )
         window.grab_set()

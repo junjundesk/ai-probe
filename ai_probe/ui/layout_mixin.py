@@ -5,6 +5,16 @@ from __future__ import annotations
 from tkinter import EXTENDED, HORIZONTAL, VERTICAL, Canvas, Listbox, Menu, Text, ttk
 
 from ..config import TEST_PROMPT
+from .theme import (
+    ON_SECONDARY_CONTAINER,
+    ON_SURFACE,
+    OUTLINE_VARIANT,
+    PRIMARY,
+    SECONDARY_CONTAINER,
+    SURFACE_CONTAINER,
+    SURFACE_CONTAINER_LOW,
+    SURFACE_CONTAINER_LOWEST,
+)
 
 
 class LayoutMixin:
@@ -37,17 +47,17 @@ class LayoutMixin:
         toolbar = ttk.Frame(self.root, style="Toolbar.TFrame", padding=(14, 7))
         toolbar.grid(row=0, column=0, columnspan=2, sticky="ew")
         toolbar.grid_columnconfigure(1, weight=1)
-        traffic = Canvas(toolbar, width=48, height=18, background="#ffffff", highlightthickness=0)
-        traffic.grid(row=0, column=0, sticky="w", padx=(0, 10))
-        for index, color in enumerate(("#ff5f57", "#febc2e", "#28c840")):
-            traffic.create_oval(4 + index * 15, 5, 14 + index * 15, 15, fill=color, outline=color)
+        brand = Canvas(toolbar, width=36, height=36, background=SURFACE_CONTAINER_LOWEST, highlightthickness=0)
+        brand.grid(row=0, column=0, sticky="w", padx=(0, 12))
+        brand.create_oval(2, 2, 34, 34, fill=PRIMARY, outline=PRIMARY)
+        brand.create_text(18, 18, text="AI", fill="#ffffff", font=("Microsoft YaHei UI", 10, "bold"))
         ttk.Label(toolbar, text="AI Probe", style="ToolbarTitle.TLabel").grid(row=0, column=1, sticky="w")
-        self._mac_button(toolbar, "最小化", self._minimize_to_tray, surface="#ffffff", width=6).grid(
+        self._mac_button(toolbar, "最小化", self._minimize_to_tray, surface=SURFACE_CONTAINER_LOWEST, width=6).grid(
             row=0, column=2, sticky="e", padx=(8, 0)
         )
-        self._mac_button(toolbar, "本地中转", self._open_relay_window, kind="primary", surface="#ffffff").grid(
-            row=0, column=3, sticky="e", padx=(8, 0)
-        )
+        self._mac_button(
+            toolbar, "本地中转", self._open_relay_window, kind="primary", surface=SURFACE_CONTAINER_LOWEST
+        ).grid(row=0, column=3, sticky="e", padx=(8, 0))
         ttk.Label(toolbar, text="多项目测活", style="ToolbarMuted.TLabel").grid(
             row=0, column=4, sticky="e", padx=(8, 0)
         )
@@ -62,22 +72,22 @@ class LayoutMixin:
         project_actions = ttk.Frame(sidebar, style="Sidebar.TFrame")
         project_actions.grid(row=1, column=0, sticky="ew", pady=(12, 8))
         project_actions.grid_columnconfigure((0, 1, 2), weight=1)
-        self._mac_button(project_actions, "新建项目", self._new_project, surface="#f1f2f5").grid(
+        self._mac_button(project_actions, "新建项目", self._new_project, surface=SURFACE_CONTAINER).grid(
             row=0, column=0, sticky="ew", padx=(0, 3)
         )
-        self._mac_button(project_actions, "删除", self._delete_project, kind="danger", surface="#f1f2f5").grid(
+        self._mac_button(project_actions, "删除", self._delete_project, kind="danger", surface=SURFACE_CONTAINER).grid(
             row=0, column=1, sticky="ew", padx=(3, 0)
         )
-        self._mac_button(project_actions, "渠道导入", self._import_channels, surface="#f1f2f5").grid(
+        self._mac_button(project_actions, "渠道导入", self._import_channels, surface=SURFACE_CONTAINER).grid(
             row=0, column=2, sticky="ew", padx=(3, 0)
         )
-        self._mac_button(project_actions, "导入", self._import_config, surface="#f1f2f5").grid(
+        self._mac_button(project_actions, "导入", self._import_config, surface=SURFACE_CONTAINER).grid(
             row=1, column=0, sticky="ew", padx=(0, 3), pady=(6, 0)
         )
-        self._mac_button(project_actions, "备份", self._backup_config, surface="#f1f2f5").grid(
+        self._mac_button(project_actions, "备份", self._backup_config, surface=SURFACE_CONTAINER).grid(
             row=1, column=1, sticky="ew", padx=3, pady=(6, 0)
         )
-        self._mac_button(project_actions, "加密文件", self._encrypt_config_file, surface="#f1f2f5").grid(
+        self._mac_button(project_actions, "加密文件", self._encrypt_config_file, surface=SURFACE_CONTAINER).grid(
             row=1, column=2, sticky="ew", padx=(3, 0), pady=(6, 0)
         )
 
@@ -93,10 +103,10 @@ class LayoutMixin:
             exportselection=False,
             borderwidth=0,
             highlightthickness=0,
-            background="#f1f2f5",
-            foreground="#1d1d1f",
+            background=SURFACE_CONTAINER,
+            foreground=ON_SURFACE,
             selectbackground="#d8eaff",
-            selectforeground="#0a4b8f",
+            selectforeground=ON_SECONDARY_CONTAINER,
             activestyle="none",
             font=("Microsoft YaHei UI", 10),
         )
@@ -124,7 +134,7 @@ class LayoutMixin:
             config_header,
             "高级设置",
             self._toggle_advanced_settings,
-            surface="#ffffff",
+            surface=SURFACE_CONTAINER_LOWEST,
         )
         self.advanced_toggle_button.grid(row=0, column=1, sticky="e")
         ttk.Label(config, text="项目名称", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 8))
@@ -154,7 +164,7 @@ class LayoutMixin:
         key_controls = ttk.Frame(config, style="Panel.TFrame")
         key_controls.grid(row=3, column=3, sticky="w", pady=(7, 0))
         ttk.Checkbutton(key_controls, text="显示", variable=self.show_key, command=self._toggle_key).pack(side="left")
-        self._mac_button(key_controls, "管理密钥", self._manage_api_keys, surface="#ffffff").pack(
+        self._mac_button(key_controls, "管理密钥", self._manage_api_keys, surface=SURFACE_CONTAINER_LOWEST).pack(
             side="left", padx=(8, 0)
         )
 
@@ -226,14 +236,14 @@ class LayoutMixin:
             header_toolbar,
             "快速添加 User-Agent",
             self._quick_add_user_agent,
-            surface="#ffffff",
+            surface=SURFACE_CONTAINER_LOWEST,
         )
         self.quick_user_agent_button.pack(side="right", padx=(8, 0))
         self.add_header_button = self._mac_button(
             header_toolbar,
             "+ 添加请求头",
             self._add_header_row,
-            surface="#ffffff",
+            surface=SURFACE_CONTAINER_LOWEST,
         )
         self.add_header_button.pack(side="right")
 
@@ -247,11 +257,11 @@ class LayoutMixin:
             wrap="none",
             borderwidth=0,
             highlightthickness=1,
-            highlightbackground="#d6d6dc",
-            highlightcolor="#007aff",
-            background="#fbfbfd",
-            foreground="#1d1d1f",
-            insertbackground="#1d1d1f",
+            highlightbackground=OUTLINE_VARIANT,
+            highlightcolor=PRIMARY,
+            background=SURFACE_CONTAINER_LOW,
+            foreground=ON_SURFACE,
+            insertbackground=ON_SURFACE,
             font=("Consolas", 9),
         )
         self.headers_json_text.bind("<<Modified>>", self._on_text_modified)
@@ -274,8 +284,8 @@ class LayoutMixin:
             height=58,
             borderwidth=0,
             highlightthickness=1,
-            highlightbackground="#d6d6dc",
-            background="#fbfbfd",
+            highlightbackground=OUTLINE_VARIANT,
+            background=SURFACE_CONTAINER_LOW,
         )
         header_scroll = ttk.Scrollbar(manual_list, orient=VERTICAL, command=self.headers_canvas.yview)
         self.headers_canvas.configure(yscrollcommand=header_scroll.set)
@@ -313,10 +323,10 @@ class LayoutMixin:
             exportselection=False,
             borderwidth=0,
             highlightthickness=1,
-            highlightbackground="#d6d6dc",
-            selectbackground="#007aff",
-            background="#fbfbfd",
-            foreground="#1d1d1f",
+            highlightbackground=OUTLINE_VARIANT,
+            selectbackground=PRIMARY,
+            background=SURFACE_CONTAINER_LOW,
+            foreground=ON_SURFACE,
             activestyle="none",
             font=("Consolas", 9),
         )
@@ -333,17 +343,17 @@ class LayoutMixin:
         remote_actions.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         remote_actions.grid_columnconfigure((0, 1), weight=1)
         fetch_button = self._mac_button(
-            remote_actions, "获取模型列表", self._fetch_models, kind="primary", surface="#ffffff"
+            remote_actions, "获取模型列表", self._fetch_models, kind="primary", surface=SURFACE_CONTAINER_LOWEST
         )
         fetch_button.grid(row=0, column=0, columnspan=2, sticky="ew")
-        self._mac_button(remote_actions, "添加选中", self._add_selected, surface="#ffffff").grid(
+        self._mac_button(remote_actions, "添加选中", self._add_selected, surface=SURFACE_CONTAINER_LOWEST).grid(
             row=1, column=0, sticky="ew", pady=(7, 0), padx=(0, 4)
         )
-        self._mac_button(remote_actions, "添加全部", self._add_all, surface="#ffffff").grid(
+        self._mac_button(remote_actions, "添加全部", self._add_all, surface=SURFACE_CONTAINER_LOWEST).grid(
             row=1, column=1, sticky="ew", pady=(7, 0), padx=(4, 0)
         )
         detect_button = self._mac_button(
-            remote_actions, "检测全部并仅添加可用", self._detect_all_available, surface="#ffffff"
+            remote_actions, "检测全部并仅添加可用", self._detect_all_available, surface=SURFACE_CONTAINER_LOWEST
         )
         detect_button.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(7, 0))
         self.network_buttons.extend([fetch_button, detect_button])
@@ -354,7 +364,9 @@ class LayoutMixin:
         added_header.grid(row=0, column=0, sticky="ew")
         added_header.grid_columnconfigure(0, weight=1)
         ttk.Label(added_header, text="项目模型", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        test_all = self._mac_button(added_header, "测活全部", self._test_all, kind="primary", surface="#ffffff")
+        test_all = self._mac_button(
+            added_header, "测活全部", self._test_all, kind="primary", surface=SURFACE_CONTAINER_LOWEST
+        )
         test_all.grid(row=0, column=1, sticky="e")
         ttk.Label(added_panel, textvariable=self.added_count, style="Muted.TLabel").grid(
             row=1, column=0, sticky="w", pady=(2, 7)
@@ -370,7 +382,7 @@ class LayoutMixin:
         self.custom_model_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
         self.custom_model_entry.bind("<Return>", self._add_custom_model)
         self._mac_button(
-            custom_model_bar, "添加", self._add_custom_model, kind="primary", surface="#ffffff", width=5
+            custom_model_bar, "添加", self._add_custom_model, kind="primary", surface=SURFACE_CONTAINER_LOWEST, width=5
         ).grid(row=0, column=2)
 
         tree_frame = ttk.Frame(added_panel, style="Panel.TFrame")
@@ -413,17 +425,19 @@ class LayoutMixin:
 
         added_actions = ttk.Frame(added_panel, style="Panel.TFrame")
         added_actions.grid(row=4, column=0, sticky="ew", pady=(10, 0))
-        test_selected = self._mac_button(added_actions, "测活选中", self._test_selected, surface="#ffffff")
-        test_selected.pack(side="left")
-        self._mac_button(added_actions, "设置密钥", self._assign_selected_model_key, surface="#ffffff").pack(
-            side="left", padx=(7, 0)
+        test_selected = self._mac_button(
+            added_actions, "测活选中", self._test_selected, surface=SURFACE_CONTAINER_LOWEST
         )
-        self._mac_button(added_actions, "删除选中", self._remove_selected, surface="#ffffff").pack(
+        test_selected.pack(side="left")
+        self._mac_button(
+            added_actions, "设置密钥", self._assign_selected_model_key, surface=SURFACE_CONTAINER_LOWEST
+        ).pack(side="left", padx=(7, 0))
+        self._mac_button(added_actions, "删除选中", self._remove_selected, surface=SURFACE_CONTAINER_LOWEST).pack(
             side="right", padx=(7, 0)
         )
-        self._mac_button(added_actions, "清空列表", self._remove_all, kind="danger", surface="#ffffff").pack(
-            side="right"
-        )
+        self._mac_button(
+            added_actions, "清空列表", self._remove_all, kind="danger", surface=SURFACE_CONTAINER_LOWEST
+        ).pack(side="right")
         self.network_buttons.extend([test_selected, test_all])
 
         footer = ttk.Frame(main, style="Panel.TFrame", padding=(10, 7))
@@ -437,9 +451,9 @@ class LayoutMixin:
             height=4,
             borderwidth=0,
             highlightthickness=0,
-            bg="#f5f5f7",
+            bg=SURFACE_CONTAINER_LOW,
             fg="#3a3a3c",
-            selectbackground="#dbeeff",
+            selectbackground=SECONDARY_CONTAINER,
             font=("Consolas", 8),
             state="disabled",
         )

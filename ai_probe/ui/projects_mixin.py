@@ -28,6 +28,7 @@ from ..projects import (
     project_key_for_model,
 )
 from ..utils import parse_channel_import, parse_custom_headers, parse_manual_headers
+from .theme import OUTLINE_VARIANT, PRIMARY, SURFACE, SURFACE_CONTAINER_LOW, SURFACE_CONTAINER_LOWEST
 
 
 class ProjectsMixin:
@@ -135,7 +136,7 @@ class ProjectsMixin:
             "×",
             lambda: self._remove_header_row(record),
             kind="danger",
-            surface="#ffffff",
+            surface=SURFACE_CONTAINER_LOWEST,
             width=3,
         ).grid(row=0, column=2)
         name_var.trace_add("write", self._schedule_save)
@@ -431,7 +432,7 @@ class ProjectsMixin:
         window.title("渠道导入")
         window.geometry("680x420")
         window.minsize(560, 340)
-        window.configure(bg="#f2f2f7")
+        window.configure(bg=SURFACE)
         window.transient(self.root)
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
@@ -455,7 +456,7 @@ class ProjectsMixin:
             font=("Consolas", 10),
             borderwidth=0,
             highlightthickness=1,
-            highlightbackground="#d6d6dc",
+            highlightbackground=OUTLINE_VARIANT,
             padx=10,
             pady=9,
             undo=True,
@@ -530,10 +531,12 @@ class ProjectsMixin:
                 )
             window.destroy()
 
-        self._mac_button(footer, "智能识别并导入", import_now, kind="primary", surface="#ffffff").grid(
+        self._mac_button(footer, "智能识别并导入", import_now, kind="primary", surface=SURFACE_CONTAINER_LOWEST).grid(
             row=0, column=1, padx=(8, 0)
         )
-        self._mac_button(footer, "取消", window.destroy, surface="#ffffff").grid(row=0, column=2, padx=(8, 0))
+        self._mac_button(footer, "取消", window.destroy, surface=SURFACE_CONTAINER_LOWEST).grid(
+            row=0, column=2, padx=(8, 0)
+        )
         editor.focus_set()
         window.grab_set()
 
@@ -562,7 +565,7 @@ class ProjectsMixin:
         window.title("管理 API 密钥")
         window.geometry("720x460")
         window.minsize(600, 360)
-        window.configure(bg="#f2f2f7")
+        window.configure(bg=SURFACE)
         window.transient(self.root)
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
@@ -582,7 +585,11 @@ class ProjectsMixin:
         list_host.grid_columnconfigure(0, weight=1)
         list_host.grid_rowconfigure(0, weight=1)
         canvas = Canvas(
-            list_host, borderwidth=0, highlightthickness=1, highlightbackground="#d6d6dc", background="#fbfbfd"
+            list_host,
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=OUTLINE_VARIANT,
+            background=SURFACE_CONTAINER_LOW,
         )
         scroll = ttk.Scrollbar(list_host, orient=VERTICAL, command=canvas.yview)
         canvas.configure(yscrollcommand=scroll.set)
@@ -633,7 +640,7 @@ class ProjectsMixin:
                 "×",
                 lambda: remove_row(record),
                 kind="danger",
-                surface="#ffffff",
+                surface=SURFACE_CONTAINER_LOWEST,
                 width=3,
             ).grid(row=0, column=2)
             rows.append(record)
@@ -648,7 +655,10 @@ class ProjectsMixin:
         footer.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
         footer.grid_columnconfigure(0, weight=1)
         self._mac_button(
-            footer, "新增密钥", lambda: add_row({"id": "", "name": "", "value": ""}) or reflow_rows(), surface="#ffffff"
+            footer,
+            "新增密钥",
+            lambda: add_row({"id": "", "name": "", "value": ""}) or reflow_rows(),
+            surface=SURFACE_CONTAINER_LOWEST,
         ).grid(row=0, column=0, sticky="w")
 
         def save_keys():
@@ -685,10 +695,12 @@ class ProjectsMixin:
             self._log(f"保存 API 密钥：{len(new_keys)} 个")
             window.destroy()
 
-        self._mac_button(footer, "保存", save_keys, kind="primary", surface="#ffffff").grid(
+        self._mac_button(footer, "保存", save_keys, kind="primary", surface=SURFACE_CONTAINER_LOWEST).grid(
             row=0, column=1, padx=(8, 0)
         )
-        self._mac_button(footer, "取消", window.destroy, surface="#ffffff").grid(row=0, column=2, padx=(8, 0))
+        self._mac_button(footer, "取消", window.destroy, surface=SURFACE_CONTAINER_LOWEST).grid(
+            row=0, column=2, padx=(8, 0)
+        )
 
     def _choose_api_key(self, title: str, prompt: str, initial_id: str | None = None) -> str | None:
         project = self._project()
@@ -710,8 +722,8 @@ class ProjectsMixin:
             height=min(10, max(4, len(keys))),
             borderwidth=0,
             highlightthickness=1,
-            highlightbackground="#d6d6dc",
-            selectbackground="#007aff",
+            highlightbackground=OUTLINE_VARIANT,
+            selectbackground=PRIMARY,
             activestyle="none",
             font=("Microsoft YaHei UI", 9),
         )
@@ -731,8 +743,10 @@ class ProjectsMixin:
 
         actions = ttk.Frame(body, style="Panel.TFrame")
         actions.grid(row=2, column=0, sticky="e")
-        self._mac_button(actions, "确定", confirm, kind="primary", surface="#ffffff").pack(side="left", padx=(0, 8))
-        self._mac_button(actions, "取消", window.destroy, surface="#ffffff").pack(side="left")
+        self._mac_button(actions, "确定", confirm, kind="primary", surface=SURFACE_CONTAINER_LOWEST).pack(
+            side="left", padx=(0, 8)
+        )
+        self._mac_button(actions, "取消", window.destroy, surface=SURFACE_CONTAINER_LOWEST).pack(side="left")
         window.grab_set()
         window.focus_force()
         self.root.wait_window(window)

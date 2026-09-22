@@ -5,18 +5,20 @@ from __future__ import annotations
 from tkinter import Canvas, Frame
 from tkinter import font as tkfont
 
+from .theme import ERROR, ERROR_CONTAINER, ON_PRIMARY, ON_SECONDARY_CONTAINER, PRIMARY, SECONDARY_CONTAINER
+
 
 class MacButton(Frame):
-    """A small canvas button with macOS-like pill geometry and direct feedback."""
+    """MD3-inspired filled and tonal buttons; retain the existing public API."""
 
     PALETTE = {
-        "primary": ("#007aff", "#006fe6", "#005ecb", "#ffffff"),
-        "secondary": ("#e5e5ea", "#d1d1d6", "#c7c7cc", "#1d1d1f"),
-        "danger": ("#fff0ef", "#ffe1df", "#ffd2cf", "#c9342b"),
+        "primary": (PRIMARY, "#7965af", "#4f378b", ON_PRIMARY),
+        "secondary": (SECONDARY_CONTAINER, "#ded3ef", "#d0bcff", ON_SECONDARY_CONTAINER),
+        "danger": (ERROR_CONTAINER, "#f2b8b5", "#e8aaa7", ERROR),
     }
 
     def __init__(
-        self, master, text="", command=None, kind="secondary", surface="#ffffff", width=None, height=32, **kwargs
+        self, master, text="", command=None, kind="secondary", surface="#ffffff", width=None, height=36, **kwargs
     ):
         super().__init__(master, bg=surface, highlightthickness=0, bd=0)
         self.command = command
@@ -38,15 +40,25 @@ class MacButton(Frame):
         self.canvas.bind("<Leave>", self._on_leave)
         self.canvas.bind("<ButtonPress-1>", self._on_press)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.canvas.configure(takefocus=True)
+        self.canvas.bind("<Return>", self._on_keyboard_activate)
+        self.canvas.bind("<space>", self._on_keyboard_activate)
+        self.canvas.bind("<FocusIn>", lambda _event: self._draw())
+        self.canvas.bind("<FocusOut>", lambda _event: self._draw())
         self._draw()
+
+    def _on_keyboard_activate(self, _event):
+        if not self._disabled and self.command:
+            self.command()
+        return "break"
 
     def _colors(self):
         normal, hover, pressed, foreground = self.PALETTE[self.kind]
         if self._disabled:
-            return "#e9e9ed", "#a1a1a6"
+            return "#e6e0e9", "#938f99"
         if self._pressed:
             return pressed, foreground
-        if self._hovered:
+        if self._hovered or self.canvas.focus_get() == self.canvas:
             return hover, foreground
         return normal, foreground
 
@@ -54,7 +66,7 @@ class MacButton(Frame):
         width = max(30, self.canvas.winfo_width() or int(self.canvas.cget("width")))
         height = max(26, self.canvas.winfo_height() or int(self.canvas.cget("height")))
         background, foreground = self._colors()
-        radius = min(12, height // 2)
+        radius = height // 2
         draw_key = (width, height, background, foreground, self._label)
         if draw_key == self._draw_key:
             return

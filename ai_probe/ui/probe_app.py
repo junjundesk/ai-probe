@@ -15,6 +15,19 @@ from .models_mixin import ModelsMixin
 from .projects_mixin import ProjectsMixin
 from .relay_mixin import RelayMixin
 from .store_mixin import StoreMixin
+from .theme import (
+    ON_SECONDARY_CONTAINER,
+    ON_SURFACE,
+    ON_SURFACE_VARIANT,
+    PRIMARY,
+    SECONDARY_CONTAINER,
+    SURFACE,
+    SURFACE_CONTAINER,
+    SURFACE_CONTAINER_HIGH,
+    SURFACE_CONTAINER_LOW,
+    SURFACE_CONTAINER_LOWEST,
+    apply_md3_styles,
+)
 from .widgets import MacButton
 
 
@@ -115,14 +128,11 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.tray.start()
 
     def _minimize_to_tray(self):
-        """Hide the main window while keeping the optional tray icon alive."""
+        """Prefer the tray, falling back to the recoverable taskbar window."""
 
         if not self.tray.minimize():
-            # Keep the window visible if the tray icon cannot be confirmed.
-            self.status.set("系统托盘不可用，未隐藏窗口")
-            self.root.deiconify()
-            self.root.lift()
-            self.root.focus_force()
+            self.status.set("系统托盘不可用，已最小化到任务栏")
+            self.root.iconify()
 
     def _on_tray_restore(self):
         if self.relay_window and self.relay_window.winfo_exists():
@@ -152,46 +162,74 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.root.title("AI Probe · 多项目测活 · 作者QQ168889526")
         self.root.geometry("1320x820")
         self.root.minsize(1040, 720)
-        self.root.configure(bg="#f2f2f7")
+        self.root.configure(bg=SURFACE)
 
         style = ttk.Style(self.root)
         style.theme_use("clam")
-        style.configure("TFrame", background="#f2f2f7")
-        style.configure("Main.TFrame", background="#f2f2f7")
-        style.configure("Toolbar.TFrame", background="#ffffff")
-        style.configure("Sidebar.TFrame", background="#f1f2f5")
-        style.configure("Panel.TFrame", background="#ffffff")
-        style.configure("Segment.TFrame", background="#eef0f4")
-        style.configure("TLabel", background="#f2f2f7", foreground="#1d1d1f", font=("Microsoft YaHei UI", 9))
-        style.configure("Panel.TLabel", background="#ffffff", foreground="#1d1d1f", font=("Microsoft YaHei UI", 9))
+        style.configure("TFrame", background=SURFACE)
+        style.configure("Main.TFrame", background=SURFACE)
+        style.configure("Toolbar.TFrame", background=SURFACE_CONTAINER_LOWEST)
+        style.configure("Sidebar.TFrame", background=SURFACE_CONTAINER)
+        style.configure("Panel.TFrame", background=SURFACE_CONTAINER_LOWEST)
+        style.configure("Segment.TFrame", background=SURFACE_CONTAINER_HIGH)
+        style.configure("TLabel", background=SURFACE, foreground=ON_SURFACE, font=("Microsoft YaHei UI", 9))
         style.configure(
-            "Title.TLabel", background="#ffffff", foreground="#111113", font=("Microsoft YaHei UI", 15, "bold")
+            "Panel.TLabel", background=SURFACE_CONTAINER_LOWEST, foreground=ON_SURFACE, font=("Microsoft YaHei UI", 9)
         )
         style.configure(
-            "ToolbarTitle.TLabel", background="#ffffff", foreground="#111113", font=("Microsoft YaHei UI", 11, "bold")
+            "Title.TLabel",
+            background=SURFACE_CONTAINER_LOWEST,
+            foreground=ON_SURFACE,
+            font=("Microsoft YaHei UI", 15, "bold"),
         )
         style.configure(
-            "ToolbarMuted.TLabel", background="#ffffff", foreground="#8b8b91", font=("Microsoft YaHei UI", 8)
+            "ToolbarTitle.TLabel",
+            background=SURFACE_CONTAINER_LOWEST,
+            foreground=ON_SURFACE,
+            font=("Microsoft YaHei UI", 11, "bold"),
         )
         style.configure(
-            "SidebarTitle.TLabel", background="#f1f2f5", foreground="#111113", font=("Microsoft YaHei UI", 15, "bold")
+            "ToolbarMuted.TLabel",
+            background=SURFACE_CONTAINER_LOWEST,
+            foreground=ON_SURFACE_VARIANT,
+            font=("Microsoft YaHei UI", 8),
         )
         style.configure(
-            "Section.TLabel", background="#ffffff", foreground="#111113", font=("Microsoft YaHei UI", 10, "bold")
+            "SidebarTitle.TLabel",
+            background=SURFACE_CONTAINER,
+            foreground=ON_SURFACE,
+            font=("Microsoft YaHei UI", 15, "bold"),
         )
-        style.configure("Muted.TLabel", background="#ffffff", foreground="#6e6e73", font=("Microsoft YaHei UI", 8))
         style.configure(
-            "StatsValue.TLabel", background="#ffffff", foreground="#111113", font=("Microsoft YaHei UI", 11, "bold")
+            "Section.TLabel",
+            background=SURFACE_CONTAINER_LOWEST,
+            foreground=ON_SURFACE,
+            font=("Microsoft YaHei UI", 10, "bold"),
         )
         style.configure(
-            "SidebarMuted.TLabel", background="#f1f2f5", foreground="#8b8b91", font=("Microsoft YaHei UI", 8)
+            "Muted.TLabel",
+            background=SURFACE_CONTAINER_LOWEST,
+            foreground=ON_SURFACE_VARIANT,
+            font=("Microsoft YaHei UI", 8),
+        )
+        style.configure(
+            "StatsValue.TLabel",
+            background=SURFACE_CONTAINER_LOWEST,
+            foreground=ON_SURFACE,
+            font=("Microsoft YaHei UI", 11, "bold"),
+        )
+        style.configure(
+            "SidebarMuted.TLabel",
+            background=SURFACE_CONTAINER,
+            foreground=ON_SURFACE_VARIANT,
+            font=("Microsoft YaHei UI", 8),
         )
         style.configure(
             "TButton",
             padding=(11, 7),
             font=("Microsoft YaHei UI", 9),
-            background="#ffffff",
-            foreground="#1d1d1f",
+            background=SURFACE_CONTAINER_LOWEST,
+            foreground=ON_SURFACE,
             borderwidth=0,
             relief="flat",
         )
@@ -200,7 +238,7 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
             background=[("pressed", "#d9d9de"), ("active", "#e8e8ed"), ("disabled", "#f0f0f2")],
             foreground=[("disabled", "#a1a1a6")],
         )
-        style.configure("Accent.TButton", background="#007aff", foreground="#ffffff")
+        style.configure("Accent.TButton", background=PRIMARY, foreground=SURFACE_CONTAINER_LOWEST)
         style.map(
             "Accent.TButton",
             background=[("pressed", "#005ecb"), ("active", "#006fe6"), ("disabled", "#9bc8f7")],
@@ -208,18 +246,20 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         )
         style.configure("Danger.TButton", foreground="#c9342b")
         style.map("Danger.TButton", foreground=[("active", "#a51f18"), ("disabled", "#e1aaa6")])
-        style.configure("TRadiobutton", background="#ffffff", foreground="#1d1d1f", font=("Microsoft YaHei UI", 9))
+        style.configure(
+            "TRadiobutton", background=SURFACE_CONTAINER_LOWEST, foreground=ON_SURFACE, font=("Microsoft YaHei UI", 9)
+        )
         style.configure(
             "Segment.TRadiobutton",
-            background="#eef0f4",
-            foreground="#6e6e73",
+            background=SURFACE_CONTAINER_HIGH,
+            foreground=ON_SURFACE_VARIANT,
             padding=(10, 5),
             font=("Microsoft YaHei UI", 9),
         )
         style.map(
             "Segment.TRadiobutton",
-            background=[("selected", "#ffffff"), ("active", "#e3e5e9")],
-            foreground=[("selected", "#1d1d1f")],
+            background=[("selected", SURFACE_CONTAINER_LOWEST), ("active", "#e3e5e9")],
+            foreground=[("selected", ON_SURFACE)],
         )
         # Keep keyboard focus usable, but remove the theme's dotted focus ring from segmented controls.
         style.layout(
@@ -237,22 +277,44 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
                 )
             ],
         )
-        style.configure("TCheckbutton", background="#ffffff", foreground="#1d1d1f", font=("Microsoft YaHei UI", 9))
-        style.configure("TEntry", padding=(7, 5), fieldbackground="#fbfbfd", foreground="#1d1d1f")
+        # Clam draws an X; borrow the native Windows tick without changing the rest of the theme.
+        if "vista" in style.theme_names():
+            indicator = "Native.Checkbutton.indicator"
+            if indicator not in style.element_names():
+                style.element_create(indicator, "from", "vista", "Checkbutton.indicator")
+            layout = style.layout("TCheckbutton")
+
+            def replace_indicator(elements):
+                for index, (name, options) in enumerate(elements):
+                    if name == "Checkbutton.indicator":
+                        elements[index] = (indicator, options)
+                    if "children" in options:
+                        replace_indicator(options["children"])
+
+            replace_indicator(layout)
+            style.layout("TCheckbutton", layout)
+        style.configure(
+            "TCheckbutton", background=SURFACE_CONTAINER_LOWEST, foreground=ON_SURFACE, font=("Microsoft YaHei UI", 9)
+        )
+        style.configure("TEntry", padding=(7, 5), fieldbackground=SURFACE_CONTAINER_LOW, foreground=ON_SURFACE)
         style.configure(
             "Treeview",
             rowheight=30,
             font=("Microsoft YaHei UI", 9),
-            background="#ffffff",
-            fieldbackground="#ffffff",
-            foreground="#1d1d1f",
+            background=SURFACE_CONTAINER_LOWEST,
+            fieldbackground=SURFACE_CONTAINER_LOWEST,
+            foreground=ON_SURFACE,
             borderwidth=0,
         )
-        style.map("Treeview", background=[("selected", "#dbeeff")], foreground=[("selected", "#0a4b8f")])
+        style.map(
+            "Treeview",
+            background=[("selected", SECONDARY_CONTAINER)],
+            foreground=[("selected", ON_SECONDARY_CONTAINER)],
+        )
         style.configure(
             "Treeview.Heading",
-            background="#f5f5f7",
-            foreground="#6e6e73",
+            background=SURFACE_CONTAINER_LOW,
+            foreground=ON_SURFACE_VARIANT,
             font=("Microsoft YaHei UI", 9, "bold"),
             padding=(7, 8),
             relief="flat",
@@ -286,6 +348,8 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
             padding=(9, 5),
         )
 
+        apply_md3_styles(self.root, style)
+
     @staticmethod
-    def _mac_button(parent, text, command, kind="secondary", surface="#ffffff", **kwargs):
+    def _mac_button(parent, text, command, kind="secondary", surface=SURFACE_CONTAINER_LOWEST, **kwargs):
         return MacButton(parent, text=text, command=command, kind=kind, surface=surface, **kwargs)

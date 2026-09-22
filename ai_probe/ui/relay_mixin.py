@@ -9,6 +9,7 @@ from tkinter.scrolledtext import ScrolledText
 from ..projects import _project_keys
 from ..relay import RelayServer
 from ..utils import compact_number, format_cache_summary
+from .theme import OUTLINE_VARIANT, SURFACE, SURFACE_CONTAINER_LOW, SURFACE_CONTAINER_LOWEST
 
 
 class RelayMixin:
@@ -27,7 +28,7 @@ class RelayMixin:
         window.title("订阅与本地中转")
         window.geometry("720x720")
         window.minsize(680, 560)
-        window.configure(bg="#f2f2f7")
+        window.configure(bg=SURFACE)
         window.protocol("WM_DELETE_WINDOW", self._close_relay_window)
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(1, weight=1)
@@ -108,7 +109,7 @@ class RelayMixin:
             variable=self.relay_request_debug_capture,
             command=self._relay_debug_capture_changed,
         ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        self._mac_button(settings, "打开日志目录", self._open_relay_log_dir, surface="#ffffff").grid(
+        self._mac_button(settings, "打开日志目录", self._open_relay_log_dir, surface=SURFACE_CONTAINER_LOWEST).grid(
             row=6, column=0, sticky="w", pady=(10, 0)
         )
 
@@ -120,12 +121,12 @@ class RelayMixin:
         projects_header.grid(row=0, column=0, sticky="ew")
         projects_header.grid_columnconfigure(0, weight=1)
         ttk.Label(projects_header, text="启用的 AI 接口", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        self._mac_button(projects_header, "全选", self._select_all_relay_projects, surface="#ffffff", width=5).grid(
-            row=0, column=1, padx=(8, 4)
-        )
-        self._mac_button(projects_header, "清空", self._clear_relay_projects, surface="#ffffff", width=5).grid(
-            row=0, column=2
-        )
+        self._mac_button(
+            projects_header, "全选", self._select_all_relay_projects, surface=SURFACE_CONTAINER_LOWEST, width=5
+        ).grid(row=0, column=1, padx=(8, 4))
+        self._mac_button(
+            projects_header, "清空", self._clear_relay_projects, surface=SURFACE_CONTAINER_LOWEST, width=5
+        ).grid(row=0, column=2)
         search_bar = ttk.Frame(projects_panel, style="Panel.TFrame")
         search_bar.grid(row=1, column=0, sticky="ew", pady=(9, 4))
         search_bar.grid_columnconfigure(0, weight=1)
@@ -139,7 +140,11 @@ class RelayMixin:
         list_host.grid_columnconfigure(0, weight=1)
         list_host.grid_rowconfigure(0, weight=1)
         self.relay_projects_canvas = Canvas(
-            list_host, borderwidth=0, highlightthickness=1, highlightbackground="#d6d6dc", background="#fbfbfd"
+            list_host,
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=OUTLINE_VARIANT,
+            background=SURFACE_CONTAINER_LOW,
         )
         relay_scroll = ttk.Scrollbar(list_host, orient=VERTICAL, command=self.relay_projects_canvas.yview)
         self.relay_projects_canvas.configure(yscrollcommand=relay_scroll.set)
@@ -180,9 +185,9 @@ class RelayMixin:
         leader_header.grid_columnconfigure(0, weight=1)
         ttk.Label(leader_header, text="模型用量排行榜", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(leader_header, text="AI项目-模型名字", style="Muted.TLabel").grid(row=0, column=1, sticky="e")
-        self._mac_button(leader_header, "清空", self._clear_relay_stats, surface="#ffffff", width=5).grid(
-            row=0, column=2, padx=(8, 0)
-        )
+        self._mac_button(
+            leader_header, "清空", self._clear_relay_stats, surface=SURFACE_CONTAINER_LOWEST, width=5
+        ).grid(row=0, column=2, padx=(8, 0))
         tree_host = ttk.Frame(leader_panel, style="Panel.TFrame")
         tree_host.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         tree_host.grid_columnconfigure(0, weight=1)
@@ -212,16 +217,18 @@ class RelayMixin:
         footer.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
         footer.grid_columnconfigure(0, weight=1)
         ttk.Label(footer, textvariable=self.relay_url, style="Panel.TLabel").grid(row=0, column=0, sticky="w")
-        self._mac_button(footer, "复制地址", self._copy_relay_url, surface="#ffffff").grid(row=0, column=1, padx=(8, 4))
-        self._mac_button(footer, "复制 localhost", self._copy_localhost_relay_url, surface="#ffffff").grid(
-            row=0, column=2, padx=(4, 4)
+        self._mac_button(footer, "复制地址", self._copy_relay_url, surface=SURFACE_CONTAINER_LOWEST).grid(
+            row=0, column=1, padx=(8, 4)
         )
+        self._mac_button(
+            footer, "复制 localhost", self._copy_localhost_relay_url, surface=SURFACE_CONTAINER_LOWEST
+        ).grid(row=0, column=2, padx=(4, 4))
         self.relay_stop_button = self._mac_button(
-            footer, "停止", self._stop_relay, kind="danger", surface="#ffffff", width=6
+            footer, "停止", self._stop_relay, kind="danger", surface=SURFACE_CONTAINER_LOWEST, width=6
         )
         self.relay_stop_button.grid(row=0, column=3, padx=(4, 4))
         self.relay_start_button = self._mac_button(
-            footer, "启动中转", self._start_relay, kind="primary", surface="#ffffff"
+            footer, "启动中转", self._start_relay, kind="primary", surface=SURFACE_CONTAINER_LOWEST
         )
         self.relay_start_button.grid(row=0, column=4, padx=(4, 0))
         self._update_relay_controls()
