@@ -7,10 +7,18 @@ import time
 
 try:
     import requests
+    from requests.adapters import HTTPAdapter
 except ImportError:
     requests = None
+    HTTPAdapter = None
 
-from .config import PROBE_TIMEOUT, TEST_PROMPT
+from .config import (
+    PROBE_CONNECT_TIMEOUT,
+    PROBE_MAX_OUTPUT_TOKENS,
+    PROBE_READ_TIMEOUT,
+    PROBE_TIMEOUT,
+    TEST_PROMPT,
+)
 from .utils import (
     error_message_from_response,
     extract_stream_text,
@@ -18,6 +26,10 @@ from .utils import (
     normalize_proxy_url,
     utc_timestamp,
 )
+
+_REQUESTS_MODULE = requests
+_ORIGINAL_GET = requests.get if requests is not None else None
+_ORIGINAL_POST = requests.post if requests is not None else None
 
 _MAX_PROBE_REPLY_CHARS = 2000
 
@@ -43,6 +55,16 @@ class OpenAIClient:
         self.proxy_url = normalize_proxy_url(proxy_url)
         self.proxies = {"http": self.proxy_url, "https": self.proxy_url} if self.proxy_url else None
         self.verify_ssl = bool(verify_ssl)
+        self.session = None
+        if hasattr(requests, "Session") and HTTPAdapter is not None:
+            self.session = requests.Session()
+            adapter = HTTPAdapter(pool_connections=4, pool_maxsize=16, max_retries=0)
+            self.session.mount("http://", adapter)
+            self.session.mount("https://", adapter)
+
+    def close(self):
+        if self.session is not None:
+            self.session.close()
 
     @property
     def headers(self) -> dict[str, str]:
@@ -62,11 +84,21 @@ class OpenAIClient:
             headers[name] = value
         return headers
 
+    def _request(self, method: str, *args, **kwargs):
+        module_method = getattr(requests, method)
+        original_method = _ORIGINAL_GET if method == "get" else _ORIGINAL_POST
+        # Keep patched/fake request modules usable in tests and self-test; normal
+        # production traffic uses the per-client connection pool.
+        if requests is not _REQUESTS_MODULE or module_method is not original_method or self.session is None:
+            return module_method(*args, **kwargs)
+        return getattr(self.session, method)(*args, **kwargs)
+
     def list_models(self) -> list[str]:
-        response = requests.get(
+        response = self._request(
+            "get",
             f"{self.base_url}/models",
             headers=self.headers,
-            timeout=(10, 30),
+            timeout=(PROBE_CONNECT_TIMEOUT, 30),
             proxies=self.proxies,
             verify=self.verify_ssl,
         )
@@ -98,12 +130,17 @@ class OpenAIClient:
     def probe(self, model: str) -> dict:
         if self.api_mode == "responses":
             url = f"{self.base_url}/responses"
-            body = {"model": model, "input": self.test_prompt, "stream": True}
+            body = {
+                "model": model,
+                "input": self.test_prompt,
+                "stream": True,
+                "max_output_tokens": PROBE_MAX_OUTPUT_TOKENS,
+            }
         elif self.api_mode == "anthropic":
             url = f"{self.base_url}/messages"
             body = {
                 "model": model,
-                "max_tokens": 128,
+                "max_tokens": PROBE_MAX_OUTPUT_TOKENS,
                 "messages": [{"role": "user", "content": self.test_prompt}],
                 "stream": True,
             }
@@ -113,6 +150,7 @@ class OpenAIClient:
                 "model": model,
                 "messages": [{"role": "user", "content": self.test_prompt}],
                 "stream": True,
+                "max_tokens": PROBE_MAX_OUTPUT_TOKENS,
             }
 
         started = time.perf_counter()
@@ -124,12 +162,13 @@ class OpenAIClient:
         event_name = ""
 
         try:
-            with requests.post(
+            with self._request(
+                "post",
                 url,
                 headers={**self.headers, "Accept": "text/event-stream"},
                 json=body,
                 stream=True,
-                timeout=(8, PROBE_TIMEOUT),
+                timeout=(PROBE_CONNECT_TIMEOUT, PROBE_READ_TIMEOUT),
                 proxies=self.proxies,
                 verify=self.verify_ssl,
             ) as response:

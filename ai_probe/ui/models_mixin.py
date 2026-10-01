@@ -10,7 +10,7 @@ from datetime import datetime
 from tkinter import END, messagebox, simpledialog
 
 from ..client import OpenAIClient
-from ..config import MAX_WORKERS, PROBE_TIMEOUT, PROBE_UI_BATCH_SIZE
+from ..config import MAX_LOG_LINES, MAX_WORKERS, PROBE_TIMEOUT, PROBE_UI_BATCH_SIZE
 from ..projects import _project_keys, api_key_label, project_key_for_model
 from ..utils import parse_custom_headers, parse_manual_headers, utc_timestamp
 
@@ -45,6 +45,7 @@ class ModelsMixin:
         self._row_render_cache = {}
         self._row_order_index = {}
         self._remote_list_signature = None
+        self._probe_store_dirty = False
 
     @staticmethod
     def _format_ms(value) -> str:
@@ -745,14 +746,15 @@ class ModelsMixin:
         self.status.set(f"{progress_label}：{completed}/{total}")
 
     def _schedule_probe_save(self):
-        if self.probe_save_after:
-            self.root.after_cancel(self.probe_save_after)
-        self.probe_save_after = self.root.after(500, self._flush_probe_save)
+        self._probe_store_dirty = True
 
     def _flush_probe_save(self):
-        if self.probe_save_after:
+        if getattr(self, "probe_save_after", None):
             self.root.after_cancel(self.probe_save_after)
             self.probe_save_after = None
+        if not getattr(self, "_probe_store_dirty", False):
+            return
+        self._probe_store_dirty = False
         self._save_store()
 
     def _show_model_detail(self, _event=None):
@@ -792,6 +794,7 @@ class ModelsMixin:
         threading.Thread(target=runner, daemon=True).start()
 
     def _finish_job(self):
+        self._flush_probe_save()
         self.busy = False
         self.root.configure(cursor="")
         for button in self.network_buttons:
@@ -827,6 +830,10 @@ class ModelsMixin:
         stamp = datetime.now().strftime("%H:%M:%S")
         self.log_text.configure(state="normal")
         self.log_text.insert(END, f"[{stamp}] {message}\n")
+        line_count = int(self.log_text.index("end-1c").split(".", 1)[0])
+        excess = line_count - MAX_LOG_LINES
+        if excess > 0:
+            self.log_text.delete("1.0", f"{excess + 1}.0")
         self.log_text.see(END)
         self.log_text.configure(state="disabled")
 

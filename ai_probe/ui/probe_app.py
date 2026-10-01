@@ -44,6 +44,7 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.updating_projects = False
         self.save_timer = None
         self.probe_save_after = None
+        self._probe_store_dirty = False
         self.busy = False
         self.network_buttons = []
         self.tree_model_ids = {}

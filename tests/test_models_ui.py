@@ -214,6 +214,22 @@ class ModelResultDisplayTests(unittest.TestCase):
 
         self.assertEqual(mixin.root.clipboard_append.call_args.args[0], "完整错误信息")
 
+    def test_probe_save_marks_dirty_without_scheduling_timer(self):
+        mixin = ModelsMixin()
+        mixin.probe_save_after = None
+        mixin._schedule_probe_save()
+
+        self.assertTrue(mixin._probe_store_dirty)
+
+    def test_log_is_trimmed_to_recent_lines(self):
+        mixin = ModelsMixin()
+        mixin.log_text = Mock()
+        mixin.log_text.index.return_value = "2001.0"
+
+        mixin._log("latest")
+
+        mixin.log_text.delete.assert_called_once_with("1.0", "2.0")
+
 
 class ModelCollectionConcurrencyTests(unittest.TestCase):
     def test_remote_model_lists_are_collected_concurrently(self):

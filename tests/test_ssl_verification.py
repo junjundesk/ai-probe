@@ -26,6 +26,29 @@ class SSLVerificationTests(unittest.TestCase):
 
         self.assertIs(request_get.call_args.kwargs["verify"], False)
 
+    @patch("ai_probe.client.requests.post")
+    def test_probe_uses_small_output_limit_and_read_timeout(self, request_post):
+        response = MagicMock(ok=True)
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.iter_lines.return_value = iter(["data: [DONE]"])
+        request_post.return_value = response
+
+        for api_mode, output_key in (
+            ("chat", "max_tokens"),
+            ("responses", "max_output_tokens"),
+            ("anthropic", "max_tokens"),
+        ):
+            with self.subTest(api_mode=api_mode):
+                client = OpenAIClient("https://example.com", "key", api_mode)
+                self.assertIsNotNone(client.session)
+                result = client.probe("model")
+
+                self.assertTrue(result["ok"])
+                body = request_post.call_args.kwargs["json"]
+                self.assertEqual(body[output_key], 32)
+                self.assertEqual(request_post.call_args.kwargs["timeout"], (8.0, 5.0))
+
     @patch("ai_probe.client.requests.post", side_effect=RuntimeError("connection stopped"))
     def test_probe_uses_configured_ssl_verification(self, request_post):
         result = OpenAIClient("https://example.com", "key", "responses", verify_ssl=False).probe("model")
