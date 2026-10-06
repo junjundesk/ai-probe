@@ -140,6 +140,45 @@ class QtApplicationSmokeTests(unittest.TestCase):
                 window.close()
                 _QT_APP.processEvents()
 
+    def test_relay_dialog_lists_enabled_projects_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            payload = default_store()
+            base = dict(payload["projects"][0])
+            payload["projects"] = [
+                {**base, "id": "p-1", "name": "Alpha"},
+                {**base, "id": "p-2", "name": "Beta"},
+                {**base, "id": "p-3", "name": "Gamma"},
+                {**base, "id": "p-4", "name": "Delta"},
+            ]
+            payload["selected_project_id"] = "p-1"
+            payload["relay"]["project_ids"] = ["p-3"]
+            service = StoreService(b"0123456789abcdef0123456789abcdef", path)
+            service.save(payload)
+            window = QtMainWindow(service.config_key, data_file=path, usage_file=Path(directory) / "usage.json")
+            try:
+                window.open_relay()
+                dialog = window.relay_dialog
+
+                def names():
+                    return [dialog.projects.item(i).data(Qt.UserRole + 1) for i in range(dialog.projects.count())]
+
+                self.assertEqual(names(), ["Gamma", "Alpha", "Beta", "Delta"], "已启用的渠道应排在前面")
+
+                # 勾选后重新同步，列表顺序随之调整，新启用的渠道排到最前。
+                dialog.projects.item(1).setCheckState(Qt.Checked)
+                _QT_APP.processEvents()
+                dialog.refresh_projects()
+                self.assertEqual(names(), ["Alpha", "Gamma", "Beta", "Delta"])
+                self.assertEqual(
+                    [dialog.projects.item(i).data(Qt.UserRole) for i in range(2)],
+                    ["p-1", "p-3"],
+                )
+            finally:
+                dialog.close()
+                window.close()
+                _QT_APP.processEvents()
+
     def test_remote_model_list_context_menu_and_copy(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"

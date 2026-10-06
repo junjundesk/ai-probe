@@ -289,9 +289,12 @@ class QtRelayDialog(QDialog):
     def refresh_projects(self):
         relay = self.app.store.get("relay", {})
         enabled = set(relay.get("project_ids", []))
+        projects = list(self.app.store.get("projects", []))
+        # 已启用的排前面，方便一眼看到中转实际用到的接口；两组内部按项目名排序。
+        projects.sort(key=lambda project: (project.get("id") not in enabled, str(project.get("name", "")).casefold()))
         self.projects.blockSignals(True)
         self.projects.clear()
-        for project in self.app.store.get("projects", []):
+        for project in projects:
             item = QListWidgetItem(
                 f"{project.get('name', '未命名项目')} · {len(_project_keys(project))} 个密钥 · "
                 f"{len(project.get('models', []))} 个模型 · {project.get('api_mode', 'chat')}"
