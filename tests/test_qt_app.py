@@ -339,6 +339,21 @@ class QtApplicationSmokeTests(unittest.TestCase):
                 window.close()
                 _QT_APP.processEvents()
 
+    def test_close_flushes_pending_edits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            service = StoreService(b"0123456789abcdef0123456789abcdef", path)
+            service.save(default_store())
+            window = QtMainWindow(service.config_key, data_file=path, usage_file=Path(directory) / "usage.json")
+            try:
+                window.base_url.setText("https://edited.example.com/v1")
+                # 不等待防抖计时器，直接关闭，编辑也必须落盘。
+                window.close()
+                reloaded = StoreService(service.config_key, path).load()
+                self.assertEqual(reloaded["projects"][0]["base_url"], "https://edited.example.com/v1")
+            finally:
+                _QT_APP.processEvents()
+
     def test_remove_all_models_clears_current_project_only(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"

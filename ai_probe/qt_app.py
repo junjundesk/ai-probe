@@ -1710,7 +1710,8 @@ class QtMainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._save_timer.stop()
-        self.commit_form()
+        # 关闭前必须落盘，否则 450ms 防抖窗口内的编辑会随进程退出一起丢失。
+        self._flush_form_save()
         self.usage_stats.save()
         self.stop_relay()
         if self.relay_dialog:
