@@ -14,7 +14,7 @@ from ai_probe.store_service import StoreService, default_store, normalize_store
 try:
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QMessageBox
+    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QTableWidget
 
     from ai_probe.qt_app import QtMainWindow
 
@@ -246,6 +246,62 @@ class QtApplicationSmokeTests(unittest.TestCase):
                 self.assertEqual(window.project_list.currentItem().text(), "新名称")
                 reloaded = StoreService(window.store_service.config_key, Path(directory) / "config.json").load()
                 self.assertEqual(reloaded["projects"][0]["name"], "新名称")
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_manage_api_keys_delete_middle_row_keeps_key_bindings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            payload = default_store()
+            project = payload["projects"][0]
+            project["api_keys"] = [
+                {"id": "a", "name": "A", "value": "key-AAA"},
+                {"id": "b", "name": "B", "value": "key-BBB"},
+                {"id": "c", "name": "C", "value": "key-CCC"},
+            ]
+            project["models"] = [
+                {
+                    "id": "m-on-c",
+                    "api_key_id": "c",
+                    "route_name": "",
+                    "status": "未测试",
+                    "first_ms": None,
+                    "total_ms": None,
+                    "reply": "",
+                    "error": "",
+                }
+            ]
+            service = StoreService(b"0123456789abcdef0123456789abcdef", path)
+            service.save(payload)
+            window = QtMainWindow(service.config_key, data_file=path, usage_file=Path(directory) / "usage.json")
+            window.resize(1200, 800)
+            window.show()
+            _QT_APP.processEvents()
+
+            def fake_exec(dialog):
+                dialog.show()
+                for _ in range(5):
+                    _QT_APP.processEvents()
+                table = dialog.findChild(QTableWidget)
+                self.assertIsNotNone(table)
+                table.resize(600, 200)
+                for _ in range(5):
+                    _QT_APP.processEvents()
+                remove_button = table.cellWidget(1, 2)  # 删除第二把密钥 B
+                QTest.mouseClick(remove_button, Qt.LeftButton, Qt.NoModifier, remove_button.rect().center())
+                _QT_APP.processEvents()
+                return QDialog.Accepted
+
+            try:
+                with mock.patch("ai_probe.qt_app.QDialog.exec", new=fake_exec):
+                    window.manage_api_keys()
+                _QT_APP.processEvents()
+                keys = [(key["name"], key["value"]) for key in window.project()["api_keys"]]
+                self.assertEqual(keys, [("A", "key-AAA"), ("C", "key-CCC")])
+                model = window.project()["models"][0]
+                bound = next(key for key in window.project()["api_keys"] if key["id"] == model["api_key_id"])
+                self.assertEqual(bound["value"], "key-CCC", "绑定密钥 C 的模型不应被切到其他密钥")
             finally:
                 window.close()
                 _QT_APP.processEvents()

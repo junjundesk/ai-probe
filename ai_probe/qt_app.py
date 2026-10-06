@@ -1162,18 +1162,19 @@ class QtMainWindow(QMainWindow):
         table.setHorizontalHeaderLabels(["名称", "密钥", "操作"])
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         layout.addWidget(table)
-        rows = []
 
         def add_row(key=None):
             key = key or {"id": uuid.uuid4().hex, "name": "", "value": ""}
             row = table.rowCount()
             table.insertRow(row)
-            table.setItem(row, 0, QTableWidgetItem(str(key.get("name", ""))))
+            name_item = QTableWidgetItem(str(key.get("name", "")))
+            # 密钥 id 挂在行上，删行时随之消失，避免保存时 id 与内容错位导致模型绑错密钥。
+            name_item.setData(Qt.UserRole, str(key.get("id") or uuid.uuid4().hex))
+            table.setItem(row, 0, name_item)
             table.setItem(row, 1, QTableWidgetItem(str(key.get("value", ""))))
             button = QPushButton("删除")
             button.clicked.connect(lambda: table.removeRow(table.indexAt(button.pos()).row()))
             table.setCellWidget(row, 2, button)
-            rows.append(str(key.get("id") or uuid.uuid4().hex))
 
         for key in _project_keys(project):
             add_row(key)
@@ -1187,12 +1188,19 @@ class QtMainWindow(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
         keys = []
+        seen = set()
         for row in range(table.rowCount()):
+            name_item = table.item(row, 0)
+            value_item = table.item(row, 1)
+            key_id = str(name_item.data(Qt.UserRole) or uuid.uuid4().hex) if name_item else uuid.uuid4().hex
+            if key_id in seen:
+                continue
+            seen.add(key_id)
             keys.append(
                 {
-                    "id": rows[row] if row < len(rows) else uuid.uuid4().hex,
-                    "name": table.item(row, 0).text().strip(),
-                    "value": table.item(row, 1).text(),
+                    "id": key_id,
+                    "name": name_item.text().strip() if name_item else "",
+                    "value": value_item.text() if value_item else "",
                 }
             )
         if not keys:
@@ -1203,6 +1211,9 @@ class QtMainWindow(QMainWindow):
         for model in project.get("models", []):
             if model.get("api_key_id") not in valid:
                 model["api_key_id"] = keys[0]["id"]
+        for entry in project.get("discovered_models", []):
+            if entry.get("api_key_id") not in valid:
+                entry["api_key_id"] = keys[0]["id"]
         self._save_store()
         self._load_current_project()
 
