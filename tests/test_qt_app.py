@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -11,7 +12,7 @@ from ai_probe.store_service import StoreService, default_store, normalize_store
 # 缺失时只跳过 Qt 界面测试，配置存储测试仍然照跑。
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QMessageBox
 
     from ai_probe.qt_app import QtMainWindow
 
@@ -162,6 +163,30 @@ class QtApplicationSmokeTests(unittest.TestCase):
 
                 actions[2].trigger()
                 self.assertEqual([model["id"] for model in window.project()["models"]], ["claude-3"])
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_remove_all_models_clears_current_project_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            payload = default_store()
+            base = dict(payload["projects"][0])
+            payload["projects"] = [
+                {**base, "id": "p1", "name": "一", "models": [{"id": "a"}, {"id": "b"}]},
+                {**base, "id": "p2", "name": "二", "models": [{"id": "c"}]},
+            ]
+            payload["selected_project_id"] = "p1"
+            service = StoreService(b"0123456789abcdef0123456789abcdef", path)
+            service.save(payload)
+            window = QtMainWindow(service.config_key, data_file=path, usage_file=Path(directory) / "usage.json")
+            try:
+                with mock.patch("ai_probe.qt_app.QMessageBox.question", return_value=QMessageBox.Yes):
+                    window.remove_all_models()
+                _QT_APP.processEvents()
+                self.assertEqual(window.project("p1")["models"], [])
+                self.assertEqual([model["id"] for model in window.project("p2")["models"]], ["c"])
+                self.assertEqual(window.model_tree.topLevelItemCount(), 0)
             finally:
                 window.close()
                 _QT_APP.processEvents()

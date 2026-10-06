@@ -638,6 +638,9 @@ class QtMainWindow(QMainWindow):
         self.model_tree.itemDoubleClicked.connect(lambda *_: self.show_model_detail())
         self.model_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.model_tree.customContextMenuRequested.connect(self._model_menu)
+        delete_shortcut = QShortcut(QKeySequence.Delete, self.model_tree)
+        delete_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        delete_shortcut.activated.connect(self.remove_selected)
         local_layout.addWidget(self.model_tree)
         custom_row = QHBoxLayout()
         self.custom_model = QLineEdit()
@@ -958,6 +961,8 @@ class QtMainWindow(QMainWindow):
         menu.addAction("设置渠道模型名", self.set_route_name).setEnabled(item is not None)
         menu.addAction("设置密钥", self.assign_selected_key).setEnabled(item is not None)
         menu.addAction("删除", self.remove_selected).setEnabled(item is not None)
+        menu.addSeparator()
+        menu.addAction("移除全部模型", self.remove_all_models).setEnabled(self.model_tree.topLevelItemCount() > 0)
         menu.exec(self.model_tree.mapToGlobal(pos))
 
     def remote_selected_ids(self):
@@ -1475,6 +1480,16 @@ class QtMainWindow(QMainWindow):
         if not project or not ids:
             return
         project["models"] = [item for item in project["models"] if item["id"] not in ids]
+        self._save_store()
+        self.refresh_models()
+
+    def remove_all_models(self):
+        project = self.project()
+        if not project or not project.get("models"):
+            return
+        if QMessageBox.question(self, "移除全部", "确定移除当前项目的全部模型吗？") != QMessageBox.Yes:
+            return
+        project["models"] = []
         self._save_store()
         self.refresh_models()
 
