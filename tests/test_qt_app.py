@@ -42,6 +42,45 @@ class StoreNormalizationTests(unittest.TestCase):
             loaded = StoreService(service.config_key, path).load()
             self.assertEqual(loaded["relay"]["user_agent"], "qt-test-agent")
 
+    def test_normalize_tolerates_null_and_wrong_typed_fields(self):
+        # setdefault 只补缺失键；显式 null / 错误类型不能让整个配置加载失败。
+        store = normalize_store(
+            {
+                "projects": [
+                    {
+                        "id": "p1",
+                        "name": "畸形",
+                        "api_keys": None,
+                        "models": None,
+                        "discovered_models": "not-a-list",
+                        "manual_headers": None,
+                    }
+                ]
+            }
+        )
+        project = store["projects"][0]
+        self.assertEqual(project["models"], [])
+        self.assertEqual(project["discovered_models"], [])
+        self.assertEqual(project["manual_headers"], [])
+        self.assertEqual([key["id"] for key in project["api_keys"]], ["default"])
+
+    def test_normalize_drops_malformed_manual_header_rows(self):
+        # 非 dict 的请求头行会让 parse_manual_headers 抛异常，进而拖垮中转与测活。
+        store = normalize_store(
+            {
+                "projects": [
+                    {
+                        "id": "p1",
+                        "manual_headers": ["junk", {"name": "Ok", "value": "v"}, 123, None, {"name": None, "value": 5}],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(
+            store["projects"][0]["manual_headers"],
+            [{"name": "Ok", "value": "v"}, {"name": "", "value": "5"}],
+        )
+
 
 @unittest.skipUnless(QT_AVAILABLE, QT_SKIP_REASON)
 class QtApplicationSmokeTests(unittest.TestCase):

@@ -781,7 +781,9 @@ class QtMainWindow(QMainWindow):
                 rows = []
         self.manual_headers.setRowCount(0)
         for row in rows:
-            self._add_manual_row(str(row.get("name", "")), str(row.get("value", "")), schedule=False)
+            if not isinstance(row, dict):
+                continue
+            self._add_manual_row(str(row.get("name") or ""), str(row.get("value") or ""), schedule=False)
 
     def _add_manual_row(self, name="", value="", schedule=True):
         row = self.manual_headers.rowCount()

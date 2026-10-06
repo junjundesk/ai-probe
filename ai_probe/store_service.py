@@ -16,6 +16,21 @@ from .config import (
 from .projects import _project_keys, _sync_project_keys, new_project, project_key_by_id
 
 
+def _as_list(value) -> list:
+    """``setdefault`` 只补缺失键，显式 null / 错误类型要在这里兜底。"""
+    return value if isinstance(value, list) else []
+
+
+def _clean_header_rows(value) -> list[dict]:
+    """请求头行必须是 dict，否则中转侧 parse_manual_headers 会直接抛异常。"""
+    rows = []
+    for row in _as_list(value):
+        if not isinstance(row, dict):
+            continue
+        rows.append({"name": str(row.get("name") or ""), "value": str(row.get("value") or "")})
+    return rows
+
+
 def default_store() -> dict:
     return {
         "version": 2,
@@ -57,6 +72,9 @@ def normalize_store(data: dict) -> dict:
         project.setdefault("manual_headers", [])
         project.setdefault("discovered_models", [])
         project.setdefault("models", [])
+        project["manual_headers"] = _clean_header_rows(project.get("manual_headers"))
+        project["discovered_models"] = _as_list(project.get("discovered_models"))
+        project["models"] = _as_list(project.get("models"))
         _sync_project_keys(project)
         default_key_id = _project_keys(project)[0]["id"]
         discovered = []
