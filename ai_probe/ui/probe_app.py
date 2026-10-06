@@ -7,7 +7,7 @@ from tkinter import BooleanVar, StringVar, Tk, ttk
 
 from ..config import USAGE_FILE
 from ..edit_context import install_edit_context_menu
-from ..relay_only import restart_application
+from ..process import restart_application
 from ..tray import TrayController
 from ..usage import UsageStats
 from .layout_mixin import LayoutMixin

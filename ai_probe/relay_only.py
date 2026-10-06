@@ -3,35 +3,18 @@
 from __future__ import annotations
 
 import logging
-import subprocess
-import sys
-from pathlib import Path
 
 from PySide6.QtCore import QObject
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from .config import USAGE_FILE
+from .process import restart_application
 from .relay import RelayServer
 from .store_service import StoreService
 from .usage import UsageStats
 
-
-def restart_application(lightweight: bool) -> bool:
-    """Start the alternate process mode without inheriting the current UI."""
-
-    compiled = getattr(sys, "frozen", False) or globals().get("__compiled__") is not None
-    command = [sys.executable] if compiled else [sys.executable, "-m", "ai_probe"]
-    if lightweight:
-        command.append("--lightweight")
-    flags = 0
-    if sys.platform == "win32":
-        flags = 0x00000008 | 0x00000200
-    try:
-        subprocess.Popen(command, cwd=str(Path.cwd()), close_fds=True, creationflags=flags)
-    except OSError:
-        return False
-    return True
+__all__ = ["RelayOnlyApp", "restart_application"]
 
 
 class RelayOnlyApp(QObject):

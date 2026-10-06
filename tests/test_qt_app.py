@@ -5,15 +5,27 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
-
-from ai_probe.qt_app import QtMainWindow
 from ai_probe.store_service import StoreService, default_store, normalize_store
 
-_QT_APP = QApplication.instance() or QApplication([])
+# PySide6 依赖 Qt 的系统库（libEGL 等），精简容器与部分 Linux 环境里没有。
+# 缺失时只跳过 Qt 界面测试，配置存储测试仍然照跑。
+try:
+    from PySide6.QtWidgets import QApplication
+
+    from ai_probe.qt_app import QtMainWindow
+
+    _QT_APP = QApplication.instance() or QApplication([])
+    QT_AVAILABLE = True
+    QT_SKIP_REASON = ""
+except ImportError as exc:  # pragma: no cover - 取决于运行环境
+    QT_AVAILABLE = False
+    QT_SKIP_REASON = f"PySide6 不可用：{exc}"
+    _QT_APP = None
 
 
-class QtApplicationSmokeTests(unittest.TestCase):
+class StoreNormalizationTests(unittest.TestCase):
+    """不依赖 Qt 的部分，任何环境都应执行。"""
+
     def test_store_defaults_and_legacy_normalization(self):
         store = normalize_store({"projects": []})
         self.assertEqual(len(store["projects"]), 1)
@@ -30,6 +42,9 @@ class QtApplicationSmokeTests(unittest.TestCase):
             loaded = StoreService(service.config_key, path).load()
             self.assertEqual(loaded["relay"]["user_agent"], "qt-test-agent")
 
+
+@unittest.skipUnless(QT_AVAILABLE, QT_SKIP_REASON)
+class QtApplicationSmokeTests(unittest.TestCase):
     def test_main_window_and_relay_dialog_construct(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"

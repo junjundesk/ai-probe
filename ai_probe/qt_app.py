@@ -1590,7 +1590,7 @@ class QtMainWindow(QMainWindow):
         self.commit_form()
         self._save_store()
         self.stop_relay()
-        from .relay_only import restart_application
+        from .process import restart_application
 
         if restart_application(True):
             self.close()

@@ -19,6 +19,11 @@
 - 存储归一化与加密读写抽离到 `store_service.py`。
 - Windows 发布构建改用 Nuitka PySide6 插件，运行依赖移除 pystray。
 
+### Fixed
+
+- `restart_application` 移到无 GUI 的 `process.py`，旧版 Tkinter 界面与相关测试不再因它连带加载 Qt。
+- CI 测试任务补装 Qt 运行库，Linux 下 Qt 界面测试不再因缺少 `libEGL.so.1` 而失败；环境缺 Qt 时相关测试跳过而非报错。
+
 ## [1.1.3] - 2026-10-02
 
 ### Added
