@@ -1022,6 +1022,7 @@ class QtMainWindow(QMainWindow):
         self.refresh_project_list()
         self._load_current_project()
         self._save_store()
+        self._sync_relay_dialog()
 
     def delete_project(self):
         project = self.project()
@@ -1035,6 +1036,7 @@ class QtMainWindow(QMainWindow):
         self.refresh_project_list()
         self._load_current_project()
         self._save_store()
+        self._sync_relay_dialog()
 
     def rename_project(self):
         project = self.project()
@@ -1070,6 +1072,7 @@ class QtMainWindow(QMainWindow):
         self.refresh_project_list()
         self._load_current_project()
         self._save_store()
+        self._sync_relay_dialog()
 
     def copy_channel(self):
         project = self.project()
@@ -1140,6 +1143,7 @@ class QtMainWindow(QMainWindow):
             self.refresh_project_list()
             self._load_current_project()
             self._save_store()
+            self._sync_relay_dialog()
         QMessageBox.information(self, "渠道导入", f"新增 {len(imported)} 个渠道，跳过 {duplicates} 个重复渠道。")
 
     def manage_api_keys(self):
@@ -1561,6 +1565,10 @@ class QtMainWindow(QMainWindow):
             self._ensure_selection()
             self.refresh_project_list()
             self._load_current_project()
+            if self.relay_server:
+                # 中转路由缓存指向旧 store，导入后必须失效，否则仍按旧项目转发。
+                self.relay_server.invalidate_routes()
+            self._sync_relay_dialog()
             self.set_status(f"导入完成：{len(self.store['projects'])} 个项目")
         except (OSError, ValueError, TypeError, RuntimeError) as exc:
             QMessageBox.critical(self, "导入失败", str(exc))
@@ -1568,9 +1576,16 @@ class QtMainWindow(QMainWindow):
     def open_relay(self):
         if self.relay_dialog is None:
             self.relay_dialog = QtRelayDialog(self)
+        self.relay_dialog.refresh_projects()
         self.relay_dialog.show()
         self.relay_dialog.raise_()
         self.relay_dialog.activateWindow()
+
+    def _sync_relay_dialog(self):
+        """中转对话框可以一直开着，项目增删改后同步其中的启用接口列表。"""
+        if self.relay_dialog is not None:
+            self.relay_dialog.refresh_projects()
+            self.relay_dialog.update_controls()
 
     def start_relay(self):
         if self.relay_server:

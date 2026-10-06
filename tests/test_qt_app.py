@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -254,6 +255,71 @@ class QtApplicationSmokeTests(unittest.TestCase):
                 self.assertEqual([model["id"] for model in window.project("p2")["models"]], ["c"])
                 self.assertEqual(window.model_tree.topLevelItemCount(), 0)
             finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_import_config_invalidates_relay_routes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            payload = default_store()
+            project = payload["projects"][0]
+            project["base_url"] = "https://x/v1"
+            project["api_key"] = "sk-1"
+            project["models"] = [
+                {
+                    "id": "old-model",
+                    "api_key_id": "default",
+                    "route_name": "",
+                    "status": "可用",
+                    "first_ms": 1,
+                    "total_ms": 2,
+                    "reply": "r",
+                    "error": "",
+                }
+            ]
+            payload["relay"]["project_ids"] = [project["id"]]
+            payload["relay"]["port"] = 0
+            service = StoreService(b"0123456789abcdef0123456789abcdef", path)
+            service.save(payload)
+            window = QtMainWindow(service.config_key, data_file=path, usage_file=Path(directory) / "usage.json")
+            window.resize(1200, 800)
+            try:
+                window.start_relay()
+                _QT_APP.processEvents()
+                self.assertIsNotNone(window.relay_server)
+                self.assertIn("old-model", window.relay_server.model_routes())
+
+                imported = default_store()
+                imported_project = imported["projects"][0]
+                imported_project["base_url"] = "https://y/v1"
+                imported_project["api_key"] = "sk-2"
+                imported_project["models"] = [
+                    {
+                        "id": "new-model",
+                        "api_key_id": "default",
+                        "route_name": "",
+                        "status": "可用",
+                        "first_ms": 1,
+                        "total_ms": 2,
+                        "reply": "r",
+                        "error": "",
+                    }
+                ]
+                imported["relay"]["project_ids"] = [imported_project["id"]]
+                import_path = Path(directory) / "import.json"
+                import_path.write_text(json.dumps(imported, ensure_ascii=False), encoding="utf-8")
+
+                with (
+                    mock.patch("ai_probe.qt_app.QFileDialog.getOpenFileName", return_value=(str(import_path), "")),
+                    mock.patch("ai_probe.qt_app.QMessageBox.question", return_value=QMessageBox.Yes),
+                ):
+                    window.import_config()
+                _QT_APP.processEvents()
+                routes = window.relay_server.model_routes()
+                self.assertIn("new-model", routes, "导入配置后中转应立即改用新路由")
+                self.assertNotIn("old-model", routes)
+            finally:
+                window.stop_relay()
                 window.close()
                 _QT_APP.processEvents()
 
