@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -609,6 +609,11 @@ class QtMainWindow(QMainWindow):
         remote_layout = QVBoxLayout(remote_box)
         self.remote_list = QListWidget()
         self.remote_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.remote_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.remote_list.customContextMenuRequested.connect(self._remote_menu)
+        copy_shortcut = QShortcut(QKeySequence.Copy, self.remote_list)
+        copy_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        copy_shortcut.activated.connect(self.copy_remote_model)
         remote_layout.addWidget(self.remote_list)
         remote_buttons = QHBoxLayout()
         fetch = QPushButton("获取模型列表")
@@ -955,6 +960,39 @@ class QtMainWindow(QMainWindow):
         menu.addAction("删除", self.remove_selected).setEnabled(item is not None)
         menu.exec(self.model_tree.mapToGlobal(pos))
 
+    def remote_selected_ids(self):
+        ids = []
+        for row in range(self.remote_list.count()):
+            item = self.remote_list.item(row)
+            if item is not None and item.isSelected() and row < len(self.remote_model_entries):
+                ids.append(str(self.remote_model_entries[row].get("id", "")))
+        return [model_id for model_id in ids if model_id]
+
+    def copy_remote_model(self):
+        ids = self.remote_selected_ids()
+        if ids:
+            self.copy_text("\n".join(ids))
+            self.set_status(f"已复制模型：{', '.join(ids)}")
+
+    def _remote_menu(self, pos):
+        item = self.remote_list.itemAt(pos)
+        if item is not None and not item.isSelected():
+            # 右键点击未选中项时切换选中，已选中的多项则保留，方便批量操作。
+            self.remote_list.clearSelection()
+            item.setSelected(True)
+            self.remote_list.setCurrentItem(item)
+        menu = self._build_remote_menu()
+        menu.exec(self.remote_list.mapToGlobal(pos))
+
+    def _build_remote_menu(self):
+        has_selection = bool(self.remote_selected_ids())
+        menu = QMenu(self)
+        menu.addAction("复制模型名称", self.copy_remote_model).setEnabled(has_selection)
+        menu.addSeparator()
+        menu.addAction("添加选中", self.add_selected_models).setEnabled(has_selection)
+        menu.addAction("添加全部", self.add_all_models).setEnabled(self.remote_list.count() > 0)
+        return menu
+
     def new_project(self):
         self.commit_form()
         project = new_project(f"项目 {len(self.store['projects']) + 1}")
@@ -1235,8 +1273,8 @@ class QtMainWindow(QMainWindow):
             self._append_log("获取模型列表失败：" + "；".join(errors))
 
     def add_selected_models(self):
-        selected = [self.remote_model_entries[row.row()] for row in self.remote_list.selectedItems()]
-        self.add_models(selected)
+        rows = sorted(self.remote_list.row(item) for item in self.remote_list.selectedItems())
+        self.add_models([self.remote_model_entries[row] for row in rows if row < len(self.remote_model_entries)])
 
     def add_all_models(self):
         self.add_models(self.remote_model_entries)

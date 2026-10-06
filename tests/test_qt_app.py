@@ -10,6 +10,7 @@ from ai_probe.store_service import StoreService, default_store, normalize_store
 # PySide6 依赖 Qt 的系统库（libEGL 等），精简容器与部分 Linux 环境里没有。
 # 缺失时只跳过 Qt 界面测试，配置存储测试仍然照跑。
 try:
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
     from ai_probe.qt_app import QtMainWindow
@@ -132,6 +133,35 @@ class QtApplicationSmokeTests(unittest.TestCase):
                 self.assertEqual(window.store["relay"]["project_ids"], ["p-beta"])
                 dialog.project_search.clear()
                 self.assertFalse(any(dialog.projects.item(i).isHidden() for i in range(dialog.projects.count())))
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_remote_model_list_context_menu_and_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            payload = default_store()
+            project = payload["projects"][0]
+            project["discovered_models"] = [{"id": "gpt-4o"}, {"id": "claude-3"}, {"id": "deepseek-chat"}]
+            service = StoreService(b"0123456789abcdef0123456789abcdef", path)
+            service.save(payload)
+            window = QtMainWindow(service.config_key, data_file=path, usage_file=Path(directory) / "usage.json")
+            try:
+                self.assertEqual(window.remote_list.count(), 3)
+                self.assertEqual(window.remote_list.contextMenuPolicy(), Qt.ContextMenuPolicy.CustomContextMenu)
+                self.assertFalse(window._build_remote_menu().actions()[0].isEnabled())
+
+                window.remote_list.item(1).setSelected(True)
+                window.remote_list.setCurrentItem(window.remote_list.item(1))
+                window.copy_remote_model()
+                self.assertEqual(_QT_APP.clipboard().text(), "claude-3")
+                actions = window._build_remote_menu().actions()
+                self.assertTrue(actions[0].isEnabled())
+                self.assertTrue(actions[2].isEnabled())
+                self.assertTrue(actions[3].isEnabled())
+
+                actions[2].trigger()
+                self.assertEqual([model["id"] for model in window.project()["models"]], ["claude-3"])
             finally:
                 window.close()
                 _QT_APP.processEvents()
