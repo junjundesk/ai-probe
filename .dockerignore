@@ -1,0 +1,40 @@
+# 构建上下文只需要源码与打包元数据（见 Dockerfile 的 COPY）。
+# 运行时数据、本地密钥和构建产物一律不进上下文，避免把加密配置和
+# ai_probe_config.key 送进镜像层。
+
+.git
+.github
+.gitignore
+.gitattributes
+.githooks
+.zcode
+.claude
+
+# 本地运行数据与密钥
+ai_probe_config.key
+ai_probe_projects*.json
+ai_probe_usage*.json
+logs/
+relay-error.log
+
+# 构建与缓存产物
+build/
+dist/
+artifacts/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+
+# 文档与 CI 相关，镜像里用不到
+*.md
+!README.md
+CHANGELOG.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+SECURITY.md
+tests/
+app.py
+AI-Probe-Launcher.exe
+*.exe

@@ -6,3 +6,5 @@
 *.toml text eol=lf
 *.json text eol=lf
 LICENSE text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf

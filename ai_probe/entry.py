@@ -12,6 +12,17 @@ def main() -> None:
         self_test()
         return
 
+    if "--healthcheck" in sys.argv:
+        from .relay_service import healthcheck
+
+        raise SystemExit(0 if healthcheck() else 1)
+
+    if "--serve" in sys.argv:
+        # 容器部署走这条路：只依赖与 GUI 无关的中转核心，不导入 PySide6。
+        from .relay_service import main as serve
+
+        raise SystemExit(serve())
+
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
     except ImportError as exc:
