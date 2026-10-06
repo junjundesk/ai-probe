@@ -410,11 +410,13 @@ class RelayServer:
         request_debug_capture: bool = False,
         system_prompt: str = "",
         append_user_prompt: bool = True,
+        user_agent: str = "",
     ):
         self.app = app
         self.host = host
         self.port = port
         self.auth_key = auth_key.strip()
+        self.user_agent = str(user_agent or "").strip()
         self.error_logging_enabled = bool(error_logging_enabled)
         self.request_logging_enabled = bool(request_logging_enabled)
         self.request_debug_capture = bool(request_debug_capture)
@@ -641,7 +643,12 @@ class RelayServer:
                         path = owner.upstream_path(client.api_mode)
                         if not mode_converted and "?" in self.path:
                             path += "?" + self.path.split("?", 1)[1]
-                        upstream_headers = owner.upstream_headers(client, self.headers, passthrough=not mode_converted)
+                        upstream_headers = owner.upstream_headers(
+                            client,
+                            self.headers,
+                            passthrough=not mode_converted,
+                            user_agent=owner.user_agent,
+                        )
                         if owner.request_debug_capture:
                             attempt["upstream_request_headers"] = owner._debug_headers(upstream_headers)
                             attempt["upstream_request"] = owner._debug_body(
@@ -1202,33 +1209,40 @@ class RelayServer:
         return "/chat/completions"
 
     @staticmethod
-    def upstream_headers(client: OpenAIClient, incoming_headers, passthrough: bool) -> dict[str, str]:
+    def upstream_headers(
+        client: OpenAIClient, incoming_headers, passthrough: bool, user_agent: str = ""
+    ) -> dict[str, str]:
         headers = dict(client.headers)
-        if not passthrough:
-            return headers
-        blocked = {
-            "authorization",
-            "x-api-key",
-            "host",
-            "content-length",
-            "connection",
-            "keep-alive",
-            "proxy-authenticate",
-            "proxy-authorization",
-            "te",
-            "trailer",
-            "transfer-encoding",
-            "upgrade",
-            "cookie",
-        }
-        configured = {
-            name.lower()
-            for name, value in client.custom_headers.items()
-            if name.lower() != "user-agent" or str(value).strip()
-        }
-        for name, value in incoming_headers.items():
-            if name.lower() not in blocked and name.lower() not in configured:
-                headers[name] = value
+        if passthrough:
+            blocked = {
+                "authorization",
+                "x-api-key",
+                "host",
+                "content-length",
+                "connection",
+                "keep-alive",
+                "proxy-authenticate",
+                "proxy-authorization",
+                "te",
+                "trailer",
+                "transfer-encoding",
+                "upgrade",
+                "cookie",
+            }
+            configured = {
+                name.lower()
+                for name, value in client.custom_headers.items()
+                if name.lower() != "user-agent" or str(value).strip()
+            }
+            for name, value in incoming_headers.items():
+                if name.lower() not in blocked and name.lower() not in configured:
+                    headers[name] = value
+        normalized_user_agent = str(user_agent or "").strip()
+        if normalized_user_agent:
+            for name in list(headers):
+                if name.lower() == "user-agent":
+                    del headers[name]
+            headers["User-Agent"] = normalized_user_agent
         return headers
 
     @staticmethod

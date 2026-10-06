@@ -96,6 +96,7 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.relay_host = StringVar(value=str(relay.get("host", "127.0.0.1")))
         self.relay_port = StringVar(value=str(relay.get("port", 8040)))
         self.relay_key = StringVar(value=str(relay.get("api_key", "")))
+        self.relay_user_agent = StringVar(value=str(relay.get("user_agent", "")))
         self.relay_error_logging_enabled = BooleanVar(value=bool(relay.get("error_logging_enabled", True)))
         self.relay_request_logging_enabled = BooleanVar(value=bool(relay.get("request_logging_enabled", True)))
         self.relay_request_debug_capture = BooleanVar(value=bool(relay.get("request_debug_capture", False)))
@@ -104,6 +105,7 @@ class ProbeApp(LayoutMixin, RelayMixin, StoreMixin, ProjectsMixin, ModelsMixin):
         self.relay_status = StringVar(value="未启动")
         self.relay_url = StringVar(value="")
         self.relay_key.trace_add("write", self._relay_key_changed)
+        self.relay_user_agent.trace_add("write", self._relay_user_agent_changed)
         self.project_search.trace_add("write", self._project_search_changed)
         self.relay_project_search.trace_add("write", self._relay_project_search_changed)
 

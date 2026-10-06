@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](pyproject.toml)
 
-面向 OpenAI 兼容、Responses 和 Anthropic API 的桌面测活工具，内置多项目管理、模型发现、请求头/代理配置、加密本地配置和本地兼容转发。
+面向 OpenAI 兼容、Responses 和 Anthropic API 的 PySide6 桌面测活工具，内置多项目管理、模型发现、请求头/代理配置、加密本地配置和本地兼容转发。
 
 ## 功能
 
@@ -50,7 +50,9 @@ ai_probe/
   protocols/      Chat、Responses、Anthropic 协议转换
   relay.py        本地兼容转发服务
   usage.py        本地用量统计
-  ui/             Tkinter 主窗口及按职责拆分的 UI mixin
+  qt_app.py       PySide6 主窗口、模型工作区与本地中转界面
+  store_service.py 无 GUI 的配置加载、归一化和加密存储
+  ui/             旧版 Tkinter UI 兼容代码（不由新入口加载）
   entry.py        应用启动入口
 app.py            兼容原有启动方式的薄入口
 tests/            核心回归测试

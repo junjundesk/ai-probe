@@ -1,11 +1,11 @@
-"""Tkinter 用户界面."""
+"""Compatibility export for the PySide6 desktop UI."""
 
 __all__ = ["ProbeApp"]
 
 
 def __getattr__(name):
     if name == "ProbeApp":
-        from .probe_app import ProbeApp
+        from ..qt_app import QtMainWindow
 
-        return ProbeApp
+        return QtMainWindow
     raise AttributeError(name)

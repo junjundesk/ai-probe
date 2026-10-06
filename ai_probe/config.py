@@ -8,7 +8,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from tkinter import StringVar, Tk, Toplevel, messagebox, ttk
 
 try:
     from cryptography.exceptions import InvalidTag
@@ -102,50 +101,16 @@ def decrypt_config(text: str, secret: str | bytes | None = None, allow_legacy: b
     return data, True
 
 
-def ask_startup_password(root: Tk, prompt: str) -> str | None:
-    result = {"password": None}
-    window = Toplevel(root)
-    window.title("配置解密")
-    window.resizable(False, False)
+def load_or_create_config_key(
+    ask_password=None,
+    show_info=None,
+    show_error=None,
+) -> bytes | None:
+    """Load the stored key or ask for a password through injected UI callbacks.
 
-    body = ttk.Frame(window, padding=18)
-    body.grid(row=0, column=0, sticky="nsew")
-    ttk.Label(body, text=prompt, wraplength=380).grid(row=0, column=0, columnspan=2, sticky="w")
-    password = StringVar(window)
-    entry = ttk.Entry(body, textvariable=password, show="*", width=44)
-    entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 12))
-    error = StringVar(window)
-    ttk.Label(body, textvariable=error, foreground="#b3261e").grid(row=2, column=0, columnspan=2, sticky="w")
-
-    def submit(_event=None):
-        value = password.get().strip()
-        if not value:
-            error.set("配置密码不能为空")
-            entry.focus_set()
-            return "break"
-        result["password"] = value
-        window.destroy()
-        return "break"
-
-    def cancel(_event=None):
-        window.destroy()
-        return "break"
-
-    ttk.Button(body, text="取消", command=cancel).grid(row=3, column=0, sticky="e", padx=(0, 6), pady=(12, 0))
-    ttk.Button(body, text="确定", command=submit).grid(row=3, column=1, sticky="e", pady=(12, 0))
-    window.bind("<Escape>", cancel)
-    window.protocol("WM_DELETE_WINDOW", cancel)
-    window.update_idletasks()
-    x = max(0, (window.winfo_screenwidth() - window.winfo_reqwidth()) // 2)
-    y = max(0, (window.winfo_screenheight() - window.winfo_reqheight()) // 2)
-    window.geometry(f"+{x}+{y}")
-    window.grab_set()
-    window.after_idle(entry.focus_force)
-    root.wait_window(window)
-    return result["password"]
-
-
-def load_or_create_config_key(root: Tk) -> bytes | None:
+    The crypto and file handling remain GUI-independent so console self-tests and
+    lightweight relay mode do not import a widget toolkit.
+    """
     try:
         if CONFIG_KEY_FILE.exists():
             encoded = CONFIG_KEY_FILE.read_text(encoding="utf-8").strip()
@@ -158,23 +123,29 @@ def load_or_create_config_key(root: Tk) -> bytes | None:
     except (OSError, ValueError):
         pass
 
+    if ask_password is None:
+        return None
     first_setup = not CONFIG_KEY_FILE.exists()
     while True:
         prompt = "首次使用，请设置配置加密密码（不能为空）：" if first_setup else "请输入配置文件的 AES 解密密码："
-        secret = ask_startup_password(root, prompt)
+        secret = ask_password(prompt)
         if secret is None:
             return None
+        secret = str(secret).strip()
+        if not secret:
+            if show_error:
+                show_error("配置解密", "配置密码不能为空")
+            continue
         key = _derive_config_key(secret)
         try:
             if DATA_FILE.exists():
                 _data, encrypted = decrypt_config(DATA_FILE.read_text(encoding="utf-8"), key, allow_legacy=False)
-                if not encrypted:
-                    messagebox.showinfo(
-                        "迁移明文配置",
-                        "检测到旧版明文配置，登录后将使用当前密码进行 AES 加密。",
-                        parent=root,
-                    )
+                if not encrypted and show_info:
+                    show_info("迁移明文配置", "检测到旧版明文配置，登录后将使用当前密码进行 AES 加密。")
             save_config_key(key)
             return key
         except (OSError, ValueError, TypeError, RuntimeError) as exc:
-            messagebox.showerror("解密失败", str(exc), parent=root)
+            if show_error:
+                show_error("解密失败", str(exc))
+            else:
+                return None

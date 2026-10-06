@@ -91,26 +91,35 @@ class RelayMixin:
         ttk.Label(settings, text="留空表示不校验访问密钥", style="Muted.TLabel").grid(
             row=2, column=1, columnspan=3, sticky="w", pady=(3, 0)
         )
+        ttk.Label(settings, text="上游 User-Agent", style="Panel.TLabel").grid(
+            row=3, column=0, sticky="w", padx=(0, 8), pady=(9, 0)
+        )
+        ttk.Entry(settings, textvariable=self.relay_user_agent).grid(
+            row=3, column=1, columnspan=3, sticky="ew", pady=(9, 0)
+        )
+        ttk.Label(settings, text="留空表示不覆盖客户端和项目的 User-Agent", style="Muted.TLabel").grid(
+            row=4, column=1, columnspan=3, sticky="w", pady=(3, 0)
+        )
         ttk.Checkbutton(
             settings,
             text="记录中转非 200 精简复现日志（保存到 logs/）",
             variable=self.relay_error_logging_enabled,
             command=self._relay_error_logging_changed,
-        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 0))
         ttk.Checkbutton(
             settings,
             text="记录每个中转请求的转发结果、耗时与用量（与错误日志同目录，保存到 logs/）",
             variable=self.relay_request_logging_enabled,
             command=self._relay_request_logging_changed,
-        ).grid(row=4, column=0, columnspan=4, sticky="w")
+        ).grid(row=6, column=0, columnspan=4, sticky="w")
         ttk.Checkbutton(
             settings,
             text="调试模式：完整录制请求与返回报文（体积大，仅排查用）",
             variable=self.relay_request_debug_capture,
             command=self._relay_debug_capture_changed,
-        ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ).grid(row=7, column=0, columnspan=4, sticky="w", pady=(6, 0))
         self._mac_button(settings, "打开日志目录", self._open_relay_log_dir, surface=SURFACE_CONTAINER_LOWEST).grid(
-            row=6, column=0, sticky="w", pady=(10, 0)
+            row=8, column=0, sticky="w", pady=(10, 0)
         )
 
         projects_panel = ttk.Frame(config_tab, style="Panel.TFrame", padding=14)
@@ -343,6 +352,13 @@ class RelayMixin:
             self.relay_server.auth_key = key
         self._schedule_relay_save()
 
+    def _relay_user_agent_changed(self, *_):
+        user_agent = self.relay_user_agent.get().strip()
+        self.store.setdefault("relay", {})["user_agent"] = user_agent
+        if self.relay_server:
+            self.relay_server.user_agent = user_agent
+        self._schedule_relay_save()
+
     def _relay_prompt_text_changed(self, event):
         widget = event.widget
         if not widget.edit_modified():
@@ -406,6 +422,7 @@ class RelayMixin:
             "host": host,
             "port": port,
             "api_key": self.relay_key.get().strip(),
+            "user_agent": self.relay_user_agent.get().strip(),
             "project_ids": project_ids,
             "error_logging_enabled": self.relay_error_logging_enabled.get(),
             "request_logging_enabled": self.relay_request_logging_enabled.get(),
@@ -447,6 +464,7 @@ class RelayMixin:
                 relay["request_debug_capture"],
                 system_prompt=relay["system_prompt"],
                 append_user_prompt=relay["append_user_prompt"],
+                user_agent=relay["user_agent"],
             )
             server.start()
         except OSError as exc:

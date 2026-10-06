@@ -31,7 +31,8 @@ jobs:
           python -m nuitka
           --onefile
           --standalone
-          --enable-plugin=tk-inter
+          --enable-plugin=pyside6
+          --include-package=PySide6
           --include-package=cryptography
           --windows-console-mode=disable
           --assume-yes-for-downloads

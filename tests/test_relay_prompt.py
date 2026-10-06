@@ -130,18 +130,66 @@ class RelayPromptTests(unittest.TestCase):
         relay = StoreMixin._normalize_store({"projects": []})["relay"]
         self.assertEqual(relay["system_prompt"], "")
         self.assertTrue(relay["append_user_prompt"])
+        self.assertEqual(relay["user_agent"], "")
         relay = StoreMixin._normalize_store(
             {
                 "projects": [],
                 "relay": {
                     "system_prompt": "global\nline 2",
                     "append_user_prompt": False,
+                    "user_agent": 123,
                 },
             }
         )["relay"]
         self.assertEqual(relay["system_prompt"], "global\nline 2")
         self.assertFalse(relay["append_user_prompt"])
+        self.assertEqual(relay["user_agent"], "123")
         server = RelayServer(
-            SimpleNamespace(store={}), "127.0.0.1", 0, system_prompt=relay["system_prompt"], append_user_prompt=False
+            SimpleNamespace(store={}),
+            "127.0.0.1",
+            0,
+            system_prompt=relay["system_prompt"],
+            append_user_prompt=False,
+            user_agent=relay["user_agent"],
         )
         self.assertEqual(server.prompt_settings, ("global\nline 2", False))
+        self.assertEqual(server.user_agent, "123")
+
+    def test_relay_user_agent_overrides_incoming_and_project_headers(self):
+        client = SimpleNamespace(
+            headers={"User-Agent": "project-agent", "X-Project": "yes"},
+            custom_headers={"User-Agent": "project-agent", "X-Project": "yes"},
+        )
+        headers = RelayServer.upstream_headers(
+            client,
+            {"User-Agent": "caller-agent", "X-Incoming": "yes"},
+            passthrough=True,
+            user_agent="relay-agent",
+        )
+        self.assertEqual(headers["User-Agent"], "relay-agent")
+        self.assertEqual(headers["X-Incoming"], "yes")
+        self.assertEqual(sum(name.lower() == "user-agent" for name in headers), 1)
+        converted_headers = RelayServer.upstream_headers(
+            client,
+            {"User-Agent": "caller-agent", "X-Incoming": "yes"},
+            passthrough=False,
+            user_agent="relay-agent",
+        )
+        self.assertEqual(converted_headers["User-Agent"], "relay-agent")
+        self.assertNotIn("X-Incoming", converted_headers)
+
+    def test_blank_relay_user_agent_preserves_existing_behavior(self):
+        client = SimpleNamespace(
+            headers={"User-Agent": "project-agent"},
+            custom_headers={"User-Agent": "project-agent"},
+        )
+        self.assertEqual(
+            RelayServer.upstream_headers(client, {"User-Agent": "caller-agent"}, True)["User-Agent"],
+            "project-agent",
+        )
+        self.assertEqual(
+            RelayServer.upstream_headers(
+                SimpleNamespace(headers={}, custom_headers={}), {"User-Agent": "caller-agent"}, True
+            )["User-Agent"],
+            "caller-agent",
+        )

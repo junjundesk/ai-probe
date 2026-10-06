@@ -26,6 +26,7 @@ class StoreMixin:
             "host": "127.0.0.1",
             "port": 8040,
             "api_key": "",
+            "user_agent": "",
             "project_ids": [],
             "error_logging_enabled": True,
             "request_logging_enabled": True,
@@ -46,6 +47,7 @@ class StoreMixin:
             "host": "127.0.0.1",
             "port": 8040,
             "api_key": "",
+            "user_agent": "",
             "project_ids": [],
             "error_logging_enabled": True,
             "request_logging_enabled": True,
@@ -117,6 +119,7 @@ class StoreMixin:
         relay["project_ids"] = [
             project_id for project_id in relay.get("project_ids", []) if isinstance(project_id, str)
         ]
+        relay["user_agent"] = str(relay.get("user_agent") or "")
         relay["error_logging_enabled"] = bool(relay.get("error_logging_enabled", True))
         relay["request_logging_enabled"] = bool(relay.get("request_logging_enabled", True))
         relay["request_debug_capture"] = bool(relay.get("request_debug_capture", False))

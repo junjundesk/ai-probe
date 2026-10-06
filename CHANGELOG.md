@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-06
+
+### Added
+
+- 本地中转对话框的启用接口列表支持按项目名搜索过滤，过滤时保留隐藏项目的启用状态。
+- 中转配置支持上游 User-Agent 覆盖，留空时保持原有行为。
+
+### Changed
+
+- 桌面界面从 Tkinter 迁移到 PySide6，系统托盘改用 `QSystemTrayIcon`；配置文件格式保持兼容。
+- 存储归一化与加密读写抽离到 `store_service.py`。
+- Windows 发布构建改用 Nuitka PySide6 插件，运行依赖移除 pystray。
+
 ## [1.1.3] - 2026-10-02
 
 ### Added
