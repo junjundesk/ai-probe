@@ -11,7 +11,8 @@ from ai_probe.store_service import StoreService, default_store, normalize_store
 # PySide6 依赖 Qt 的系统库（libEGL 等），精简容器与部分 Linux 环境里没有。
 # 缺失时只跳过 Qt 界面测试，配置存储测试仍然照跑。
 try:
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QMessageBox
 
     from ai_probe.qt_app import QtMainWindow
@@ -163,6 +164,71 @@ class QtApplicationSmokeTests(unittest.TestCase):
 
                 actions[2].trigger()
                 self.assertEqual([model["id"] for model in window.project()["models"]], ["claude-3"])
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def _window_with_projects(self, directory, count):
+        path = Path(directory) / "config.json"
+        payload = default_store()
+        base = dict(payload["projects"][0])
+        payload["projects"] = [
+            {**base, "id": f"p-{index:03d}", "name": f"项目{index:03d}"} for index in range(1, count + 1)
+        ]
+        payload["selected_project_id"] = "p-001"
+        service = StoreService(b"0123456789abcdef0123456789abcdef", path)
+        service.save(payload)
+        window = QtMainWindow(service.config_key, data_file=path, usage_file=Path(directory) / "usage.json")
+        window.resize(1120, 720)
+        window.show()
+        _QT_APP.processEvents()
+        return window
+
+    def test_project_list_click_after_scroll_keeps_selection_consistent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = self._window_with_projects(directory, 300)
+            try:
+                project_list = window.project_list
+                scrollbar = project_list.verticalScrollBar()
+                self.assertGreater(scrollbar.maximum(), 0, "需要足够多的项目才能覆盖滚动场景")
+                scrollbar.setValue(scrollbar.maximum())
+                _QT_APP.processEvents()
+
+                row_height = max(project_list.sizeHintForRow(0), 1)
+                for index in range(3):
+                    point = QPoint(5, index * row_height + row_height // 2)
+                    clicked = project_list.itemAt(point)
+                    scroll_before = scrollbar.value()
+                    QTest.mouseClick(project_list.viewport(), Qt.LeftButton, Qt.NoModifier, point)
+                    _QT_APP.processEvents()
+                    current = project_list.currentItem()
+                    self.assertIsNotNone(current)
+                    self.assertEqual(current.text(), clicked.text())
+                    self.assertEqual(current.data(Qt.UserRole), window.current_id)
+                    self.assertEqual(window.project_name.text(), clicked.text())
+                    self.assertEqual(scrollbar.value(), scroll_before, "点击不应重置滚动位置")
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_project_list_blank_click_keeps_highlight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = self._window_with_projects(directory, 5)
+            try:
+                project_list = window.project_list
+                project_list.setCurrentRow(1)
+                _QT_APP.processEvents()
+                self.assertEqual(window.current_id, "p-002")
+
+                QTest.mouseClick(
+                    project_list.viewport(),
+                    Qt.LeftButton,
+                    Qt.NoModifier,
+                    QPoint(5, project_list.viewport().height() - 4),
+                )
+                _QT_APP.processEvents()
+                self.assertEqual(window.current_id, "p-002")
+                self.assertEqual(project_list.currentRow(), 1, "点击空白处后高亮不应丢失")
             finally:
                 window.close()
                 _QT_APP.processEvents()

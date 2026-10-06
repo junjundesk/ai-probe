@@ -716,21 +716,28 @@ class QtMainWindow(QMainWindow):
         query = self.project_search.text().strip().casefold()
         self.project_list.blockSignals(True)
         self.project_list.clear()
-        selected = -1
         for project in self.store["projects"]:
             if query and query not in str(project.get("name", "")).casefold():
                 continue
             item = QListWidgetItem(str(project.get("name", "未命名项目")))
             item.setData(Qt.UserRole, project["id"])
             self.project_list.addItem(item)
-            if project["id"] == self.current_id:
-                selected = self.project_list.count() - 1
-        if selected >= 0:
-            self.project_list.setCurrentRow(selected)
+        self._highlight_current_project()
         self.project_list.blockSignals(False)
+
+    def _highlight_current_project(self):
+        """把高亮拨到 current_id 所在行，调用方需自行 blockSignals。"""
+        for row in range(self.project_list.count()):
+            if self.project_list.item(row).data(Qt.UserRole) == self.current_id:
+                self.project_list.setCurrentRow(row)
+                return
 
     def _select_project_row(self, row):
         if row < 0 or row >= self.project_list.count():
+            # 点到列表空白处时 Qt 会清掉当前项，这里补回高亮，保持列表与右侧表单一致。
+            self.project_list.blockSignals(True)
+            self._highlight_current_project()
+            self.project_list.blockSignals(False)
             return
         project_id = self.project_list.item(row).data(Qt.UserRole)
         if project_id == self.current_id:
@@ -739,6 +746,10 @@ class QtMainWindow(QMainWindow):
         self.current_id = project_id
         self.store["selected_project_id"] = project_id
         self._load_current_project()
+        # commit_form 可能因改名重建列表并停留在旧项目上，这里把高亮拨回本次点击的项目。
+        self.project_list.blockSignals(True)
+        self._highlight_current_project()
+        self.project_list.blockSignals(False)
         self._save_store()
 
     def _project_menu(self, pos):
@@ -867,7 +878,9 @@ class QtMainWindow(QMainWindow):
         project = self.project()
         if not project:
             return
-        project["name"] = self.project_name.text().strip() or "未命名项目"
+        name = self.project_name.text().strip() or "未命名项目"
+        renamed = name != project.get("name")
+        project["name"] = name
         project["base_url"] = self.base_url.text().strip()
         key = self.api_key.text().strip()
         project["api_key"] = key
@@ -885,7 +898,9 @@ class QtMainWindow(QMainWindow):
         project["custom_headers"] = self.headers_json.toPlainText().strip()
         project["manual_headers"] = self._manual_header_values()
         self.store["selected_project_id"] = self.current_id
-        self.refresh_project_list()
+        if renamed:
+            # 只有改名才需要重建侧栏；否则每次提交都会打断列表滚动位置与高亮。
+            self.refresh_project_list()
 
     def schedule_save(self):
         if self.loading_form:
