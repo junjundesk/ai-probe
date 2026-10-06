@@ -234,6 +234,22 @@ class QtApplicationSmokeTests(unittest.TestCase):
                 window.close()
                 _QT_APP.processEvents()
 
+    def test_rename_project_applies_and_persists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = self._window_with_projects(directory, 3)
+            try:
+                with mock.patch("ai_probe.qt_app.QInputDialog.getText", return_value=("新名称", True)):
+                    window.rename_project()
+                _QT_APP.processEvents()
+                self.assertEqual(window.project()["name"], "新名称")
+                self.assertEqual(window.project_name.text(), "新名称")
+                self.assertEqual(window.project_list.currentItem().text(), "新名称")
+                reloaded = StoreService(window.store_service.config_key, Path(directory) / "config.json").load()
+                self.assertEqual(reloaded["projects"][0]["name"], "新名称")
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
     def test_remove_all_models_clears_current_project_only(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
@@ -255,6 +271,30 @@ class QtApplicationSmokeTests(unittest.TestCase):
                 self.assertEqual([model["id"] for model in window.project("p2")["models"]], ["c"])
                 self.assertEqual(window.model_tree.topLevelItemCount(), 0)
             finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_relay_dialog_refreshes_when_projects_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = self._window_with_projects(directory, 2)
+            try:
+                window.open_relay()
+                _QT_APP.processEvents()
+                dialog = window.relay_dialog
+                self.assertEqual(dialog.projects.count(), 2)
+
+                window.new_project()
+                _QT_APP.processEvents()
+                self.assertEqual(len(window.store["projects"]), 3)
+                self.assertEqual(dialog.projects.count(), 3, "新建项目后中转对话框应同步接口列表")
+
+                with mock.patch("ai_probe.qt_app.QInputDialog.getText", return_value=("改名了", True)):
+                    window.rename_project()
+                _QT_APP.processEvents()
+                names = {dialog.projects.item(i).data(Qt.UserRole + 1) for i in range(dialog.projects.count())}
+                self.assertIn("改名了", names, "重命名后中转对话框应显示新名称")
+            finally:
+                dialog.close()
                 window.close()
                 _QT_APP.processEvents()
 

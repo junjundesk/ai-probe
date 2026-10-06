@@ -1043,13 +1043,17 @@ class QtMainWindow(QMainWindow):
         if not project:
             return
         name, ok = QInputDialog.getText(self, "重命名项目", "项目名称：", text=project["name"])
-        if ok:
-            name = name.strip()
-            if not name:
-                QMessageBox.warning(self, "重命名项目", "项目名称不能为空")
-                return
-            project["name"] = name
-            self.commit_form()
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            QMessageBox.warning(self, "重命名项目", "项目名称不能为空")
+            return
+        # 先同步到表单再提交，否则 commit_form 会用输入框里的旧名称覆盖掉新名称。
+        self.project_name.setText(name)
+        self.commit_form()
+        self._save_store()
+        self._sync_relay_dialog()
 
     def copy_project(self):
         project = self.project()
