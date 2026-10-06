@@ -1415,6 +1415,16 @@ class QtMainWindow(QMainWindow):
         project = self.project(project_id)
         if not project:
             return
+        if not entries or not results:
+            # 上游临时故障或没有可测活的模型时保留现有配置，避免一次失败就清空模型列表。
+            reason = "未获取到模型" if not entries else "没有适合文本测活的模型"
+            self.set_status(f"检测完成：{reason}，已保留现有模型")
+            if errors:
+                self._append_log("检测时部分密钥失败：" + "；".join(errors))
+            return
+        route_names = {
+            model["id"]: model.get("route_name", "") for model in project.get("models", []) if model.get("route_name")
+        }
         available = []
         for entry, result in results:
             if result.get("ok"):
@@ -1426,6 +1436,9 @@ class QtMainWindow(QMainWindow):
                         "route_name": "",
                     }
                 )
+        for model in available:
+            if model["id"] in route_names:
+                model["route_name"] = route_names[model["id"]]
         project["discovered_models"] = entries
         project["models"] = sorted(available, key=lambda item: item["id"].lower())
         self._save_store()

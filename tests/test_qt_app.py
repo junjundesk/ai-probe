@@ -306,6 +306,39 @@ class QtApplicationSmokeTests(unittest.TestCase):
                 window.close()
                 _QT_APP.processEvents()
 
+    def test_detect_all_keeps_models_when_nothing_discovered_or_probed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = self._window_with_projects(directory, 1)
+            project = window.project()
+            project["models"] = [
+                {
+                    "id": "gpt-4o",
+                    "api_key_id": "default",
+                    "route_name": "my-alias",
+                    "status": "可用",
+                    "first_ms": 10,
+                    "total_ms": 20,
+                    "reply": "ok",
+                    "error": "",
+                }
+            ]
+            try:
+                window._apply_detected(window.current_id, ([], [], ["upstream 500"]))
+                self.assertEqual([model["id"] for model in window.project()["models"]], ["gpt-4o"])
+
+                window._apply_detected(
+                    window.current_id, ([{"id": "text-embedding-3", "api_key_id": "default"}], [], [])
+                )
+                self.assertEqual([model["id"] for model in window.project()["models"]], ["gpt-4o"])
+
+                probing = [({"id": "gpt-4o", "api_key_id": "default"}, {"ok": True, "status": "可用", "reply": "hi"})]
+                window._apply_detected(window.current_id, ([{"id": "gpt-4o", "api_key_id": "default"}], probing, []))
+                models = {model["id"]: model for model in window.project()["models"]}
+                self.assertEqual(models["gpt-4o"]["route_name"], "my-alias", "重新检测不应清空渠道模型名")
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
     def test_remove_all_models_clears_current_project_only(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
