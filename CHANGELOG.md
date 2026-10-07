@@ -2,15 +2,22 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
-
-### Changed
-
-- 移除已废弃的 Tkinter 界面：删除 `ai_probe/ui/`、`edit_context.py` 与 pystray 版 `tray.py`，界面代码只保留 PySide6 一套。相关测试中仍然有效的并发与托盘最小化覆盖已迁移到 Qt 实现。
+## [1.1.4] - 2026-10-08
 
 ### Added
 
 - 渠道导入遇到重复渠道时弹窗列出重复的渠道名，并可直接定位到已存在的渠道；存在多个重复渠道时先让用户选择目标。
+- 本地中转对话框的启用接口列表支持按项目名搜索过滤，过滤时保留隐藏项目的启用状态。
+- 中转配置支持上游 User-Agent 覆盖，留空时保持原有行为。
+- 新增无 GUI 中转服务（`python -m ai_probe --serve`）与 Docker 镜像，可由环境变量配置部署参数。
+- 新增 GHCR 工作流，推送 `main` 与 `v*` tag 时构建并推送 `amd64` 与 `arm64` 镜像。
+
+### Changed
+
+- 移除已废弃的 Tkinter 界面：删除 `ai_probe/ui/`、`edit_context.py` 与 pystray 版 `tray.py`，界面代码只保留 PySide6 一套。相关测试中仍然有效的并发与托盘最小化覆盖已迁移到 Qt 实现。
+- 桌面界面从 Tkinter 迁移到 PySide6，系统托盘改用 `QSystemTrayIcon`；配置文件格式保持兼容。
+- 存储归一化与加密读写抽离到 `store_service.py`。
+- Windows 发布构建改用 Nuitka PySide6 插件，运行依赖移除 pystray。
 
 ### Fixed
 
@@ -25,24 +32,6 @@
 - 中转对话框的启用接口列表恢复「已启用渠道排在前面」的排序，迁移到 PySide6 时丢失了该行为。
 - 模型树恢复 Delete 快捷键与「移除全部模型」菜单项。
 - 配置归一化容忍 `null` 与错误类型的字段，畸形请求头行不再导致启动、加载或转发失败。
-
-## [1.2.0] - 2026-10-06
-
-### Added
-
-- 本地中转对话框的启用接口列表支持按项目名搜索过滤，过滤时保留隐藏项目的启用状态。
-- 中转配置支持上游 User-Agent 覆盖，留空时保持原有行为。
-- 新增无 GUI 中转服务（`python -m ai_probe --serve`）与 Docker 镜像，可由环境变量配置部署参数。
-- 新增 GHCR 工作流，推送 `main` 与 `v*` tag 时构建并推送 `amd64` 与 `arm64` 镜像。
-
-### Changed
-
-- 桌面界面从 Tkinter 迁移到 PySide6，系统托盘改用 `QSystemTrayIcon`；配置文件格式保持兼容。
-- 存储归一化与加密读写抽离到 `store_service.py`。
-- Windows 发布构建改用 Nuitka PySide6 插件，运行依赖移除 pystray。
-
-### Fixed
-
 - `restart_application` 移到无 GUI 的 `process.py`，旧版 Tkinter 界面与相关测试不再因它连带加载 Qt。
 - CI 测试任务补装 Qt 运行库，Linux 下 Qt 界面测试不再因缺少 `libEGL.so.1` 而失败；环境缺 Qt 时相关测试跳过而非报错。
 
