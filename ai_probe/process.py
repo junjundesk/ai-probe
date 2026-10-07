@@ -1,8 +1,8 @@
 """进程重启辅助，与 GUI 无关。
 
 ``restart_application`` 原先放在 ``relay_only``（PySide6 模块）里，导致
-旧版 Tkinter 界面与相关测试只要导入它就会连带加载 Qt。放到这里之后，
-两种界面与无 GUI 环境都能直接复用。
+无 GUI 环境只要导入它就会连带加载 Qt。放到这里之后，GUI 与容器部署
+都能直接复用。
 """
 
 from __future__ import annotations

@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -1118,17 +1119,23 @@ class QtMainWindow(QMainWindow):
             QMessageBox.warning(self, "渠道导入失败", str(exc))
             return
         self.commit_form()
-        existing = {
-            (str(item.get("base_url", "")).rstrip("/"), str(item.get("api_key", "")).strip())
-            for item in self.store["projects"]
-        }
+        # 记录签名对应的已有项目，重复时既能计数也能把渠道名报给用户。
+        existing = {}
+        for item in self.store["projects"]:
+            signature = (str(item.get("base_url", "")).rstrip("/"), str(item.get("api_key", "")).strip())
+            existing.setdefault(signature, []).append(item)
         names = {item["name"] for item in self.store["projects"]}
         imported = []
-        duplicates = 0
+        duplicates = []
+        seen_duplicates = set()
         for channel in channels:
             signature = (channel["url"].rstrip("/"), channel["key"])
-            if signature in existing:
-                duplicates += 1
+            matches = existing.get(signature)
+            if matches:
+                for item in matches:
+                    if item["id"] not in seen_duplicates:
+                        seen_duplicates.add(item["id"])
+                        duplicates.append(item)
                 continue
             host = urlsplit(channel["url"]).hostname or "导入渠道"
             name = host
@@ -1141,7 +1148,7 @@ class QtMainWindow(QMainWindow):
             project["api_key"] = channel["key"]
             project["api_keys"] = [{"id": "default", "name": "默认", "value": channel["key"]}]
             self.store["projects"].append(project)
-            existing.add(signature)
+            existing[signature] = [project]
             names.add(name)
             imported.append(project)
         if imported:
@@ -1151,7 +1158,72 @@ class QtMainWindow(QMainWindow):
             self._load_current_project()
             self._save_store()
             self._sync_relay_dialog()
-        QMessageBox.information(self, "渠道导入", f"新增 {len(imported)} 个渠道，跳过 {duplicates} 个重复渠道。")
+        if duplicates:
+            self._prompt_duplicate_channels(duplicates, len(imported))
+        else:
+            QMessageBox.information(self, "渠道导入", f"新增 {len(imported)} 个渠道，跳过 0 个重复渠道。")
+
+    def _prompt_duplicate_channels(self, duplicates, imported_count):
+        """重复渠道提示：报出渠道名，并询问是否直接定位到已存在的项目。"""
+        summary = (
+            f"新增 {imported_count} 个渠道，跳过 {len(duplicates)} 个重复渠道。"
+            if imported_count
+            else "识别到的渠道均已存在，无需重复导入。"
+        )
+        labels = self._duplicate_labels(duplicates)
+        detail = "\n".join(f"- {label}" for label in labels)
+        box = QMessageBox(self)
+        box.setWindowTitle("渠道导入")
+        box.setIcon(QMessageBox.Question)
+        box.setText(summary)
+        box.setInformativeText(f"重复渠道：\n{detail}\n\n是否快速定位到已存在的渠道？")
+        locate_button = box.addButton("定位", QMessageBox.AcceptRole)
+        box.addButton("知道了", QMessageBox.RejectRole)
+        box.setDefaultButton(locate_button)
+        box.exec()
+        if box.clickedButton() is not locate_button:
+            return
+        target = duplicates[0]
+        if len(duplicates) > 1:
+            choice, accepted = QInputDialog.getItem(self, "定位渠道", "选择要定位的渠道：", labels, 0, False)
+            if not accepted:
+                return
+            target = duplicates[labels.index(choice)]
+        self.locate_project(target["id"])
+
+    @staticmethod
+    def _duplicate_labels(projects):
+        """重名渠道用接口地址区分，仍重名时补序号，保证下拉框里每项都能唯一选中。"""
+        labels = []
+        for project in projects:
+            name = str(project.get("name", "未命名项目"))
+            host = urlsplit(str(project.get("base_url", ""))).hostname or ""
+            base = f"{name}（{host}）" if host else name
+            label = base
+            suffix = 2
+            while label in labels:
+                label = f"{base} #{suffix}"
+                suffix += 1
+            labels.append(label)
+        return labels
+
+    def locate_project(self, project_id):
+        """把侧栏高亮与右侧表单切到指定项目，用于重复渠道的快速定位。"""
+        if not any(item["id"] == project_id for item in self.store["projects"]):
+            return
+        self.commit_form()
+        self.current_id = project_id
+        self.store["selected_project_id"] = project_id
+        # 清空搜索词，否则目标项目可能被过滤掉而无法高亮。
+        self.project_search.clear()
+        self.refresh_project_list()
+        self._load_current_project()
+        self._save_store()
+        self._sync_relay_dialog()
+        item = self.project_list.currentItem()
+        if item is not None:
+            self.project_list.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+        self.set_status(f"已定位到渠道：{self.project().get('name', '')}")
 
     def manage_api_keys(self):
         project = self.project()
@@ -1722,7 +1794,3 @@ class QtMainWindow(QMainWindow):
         if getattr(self, "tray", None):
             self.tray.hide()
         event.accept()
-
-
-# Backwards-compatible name for code that imported the old application class.
-ProbeApp = QtMainWindow

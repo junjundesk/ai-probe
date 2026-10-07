@@ -85,7 +85,6 @@ ai_probe/
   usage.py        本地用量统计
   qt_app.py       PySide6 主窗口、模型工作区与本地中转界面
   store_service.py 无 GUI 的配置加载、归一化和加密存储
-  ui/             旧版 Tkinter UI 兼容代码（不由新入口加载）
   entry.py        应用启动入口
 app.py            兼容原有启动方式的薄入口
 Dockerfile        中转镜像构建（不含 GUI）

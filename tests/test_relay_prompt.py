@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from ai_probe.protocols import _convert_request
 from ai_probe.relay import RelayServer, _inject_system_prompt
-from ai_probe.ui.store_mixin import StoreMixin
+from ai_probe.store_service import normalize_store
 
 
 class RelayPromptTests(unittest.TestCase):
@@ -127,11 +127,11 @@ class RelayPromptTests(unittest.TestCase):
                 server.stop()
 
     def test_legacy_defaults_and_saved_config(self):
-        relay = StoreMixin._normalize_store({"projects": []})["relay"]
+        relay = normalize_store({"projects": []})["relay"]
         self.assertEqual(relay["system_prompt"], "")
         self.assertTrue(relay["append_user_prompt"])
         self.assertEqual(relay["user_agent"], "")
-        relay = StoreMixin._normalize_store(
+        relay = normalize_store(
             {
                 "projects": [],
                 "relay": {
