@@ -65,12 +65,38 @@ class UsageExtractionTests(unittest.TestCase):
         )
 
     def test_extract_usage_tokens_for_anthropic(self):
+        # cache_read must be folded into input so ratio ≤ 100%
         self.assertEqual(
             extract_usage_tokens(
                 {"input_tokens": 7, "output_tokens": 1, "cache_read_input_tokens": 6},
                 "anthropic",
             ),
-            (7, 1, 6),
+            (13, 1, 6),
+        )
+
+    def test_extract_usage_tokens_for_anthropic_with_cache_creation(self):
+        # cache_creation_input_tokens must also count toward the prompt total
+        self.assertEqual(
+            extract_usage_tokens(
+                {
+                    "input_tokens": 4,
+                    "output_tokens": 3,
+                    "cache_creation_input_tokens": 20183,
+                    "cache_read_input_tokens": 5360,
+                },
+                "anthropic",
+            ),
+            (25547, 3, 5360),
+        )
+
+    def test_extract_usage_tokens_cached_clamp(self):
+        # if cached > prompt_tokens (broken upstream), clamp input up to cached
+        self.assertEqual(
+            extract_usage_tokens(
+                {"prompt_tokens": 10, "completion_tokens": 5, "prompt_tokens_details": {"cached_tokens": 40}},
+                "chat",
+            ),
+            (40, 5, 40),
         )
 
 

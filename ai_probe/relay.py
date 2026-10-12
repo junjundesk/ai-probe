@@ -1279,15 +1279,16 @@ class RelayServer:
     def _normalize_usage(
         upstream_mode: str, input_tokens: int, output_tokens: int, cached_tokens: int
     ) -> tuple[int, int, int]:
-        """Fold Anthropic cache-read tokens into the input total so the cache ratio stays <= 100%.
+        """Clamp usage so the displayed cache ratio can never exceed 100%.
 
-        OpenAI 的 input_tokens 已包含缓存命中;Anthropic 的 input_tokens 则排除
-        cache_read_input_tokens。统一口径:Anthropic 上游把命中数折回 input,让
-        缓存率 = cached / input 在各协议下都正确。
+        各协议的口径统一由 extract_usage_tokens 完成(Anthropic 的命中与写入已折回
+        input),这里只做兜底:上游若把 input 报得比命中数还小,就抬高到命中数,
+        避免出现 >100% 的缓存率。绝不在此累加命中数,否则会重复计数。
         """
-        if upstream_mode == "anthropic":
-            input_tokens = int(input_tokens or 0) + max(0, int(cached_tokens or 0))
-        return input_tokens, output_tokens, cached_tokens
+        input_tokens = int(input_tokens or 0)
+        cached_tokens = max(0, int(cached_tokens or 0))
+        output_tokens = int(output_tokens or 0)
+        return max(input_tokens, cached_tokens), output_tokens, cached_tokens
 
     @staticmethod
     def passthrough_json(app, handler, response, upstream_mode, project, model, server=None, debug_capture=False):

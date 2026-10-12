@@ -46,22 +46,40 @@ def format_cache_summary(input_tokens: int | float, cached_tokens: int | float) 
 
 
 def extract_usage_tokens(usage, api_mode: str) -> tuple[int, int, int]:
-    """Return (input_tokens, output_tokens, cached_tokens) from an upstream usage dict."""
+    """Return (input_tokens, output_tokens, cached_tokens) from an upstream usage dict.
+
+    统一口径:返回的 input_tokens 等于本次请求的全部提示词 token(含缓存命中与缓存写入),
+    cached_tokens 是其中的命中数,因此 缓存率 = cached / input 恒 <= 100%。
+
+    - OpenAI 系(chat/responses):prompt_tokens/input_tokens 本身已包含缓存命中,直接使用;
+      若上游只报了明细而把主字段算小,则用明细兜底抬高。
+    - Anthropic:input_tokens 只统计未命中且未写入缓存的部分,命中(cache_read)与写入
+      (cache_creation)都另记,必须相加才是完整提示词量。
+    """
     if not isinstance(usage, dict):
         return 0, 0, 0
-    if api_mode == "chat":
-        input_tokens = _int_field(usage, "prompt_tokens")
-        output_tokens = _int_field(usage, "completion_tokens")
-        details = usage.get("prompt_tokens_details")
-    else:
+    cached_tokens = 0
+    if api_mode == "anthropic":
         input_tokens = _int_field(usage, "input_tokens")
         output_tokens = _int_field(usage, "output_tokens")
-        details = usage.get("input_tokens_details")
-    cached_tokens = _int_field(details, "cached_tokens") if isinstance(details, dict) else 0
-    cached_tokens = max(
-        cached_tokens,
-        _int_field(usage, "cache_read_input_tokens", "prompt_cache_hit_tokens", "cache_hit_tokens"),
-    )
+        cached_tokens = _int_field(usage, "cache_read_input_tokens", "prompt_cache_hit_tokens", "cache_hit_tokens")
+        cache_creation = _int_field(usage, "cache_creation_input_tokens")
+        input_tokens = _int_field(usage, "prompt_tokens") or (input_tokens + cached_tokens + cache_creation)
+    else:
+        if api_mode == "chat":
+            input_tokens = _int_field(usage, "prompt_tokens")
+            output_tokens = _int_field(usage, "completion_tokens")
+            details = usage.get("prompt_tokens_details")
+        else:
+            input_tokens = _int_field(usage, "input_tokens")
+            output_tokens = _int_field(usage, "output_tokens")
+            details = usage.get("input_tokens_details")
+        cached_tokens = _int_field(details, "cached_tokens") if isinstance(details, dict) else 0
+        cached_tokens = max(
+            cached_tokens,
+            _int_field(usage, "cache_read_input_tokens", "prompt_cache_hit_tokens", "cache_hit_tokens"),
+        )
+        input_tokens = max(input_tokens, cached_tokens)
     return input_tokens, output_tokens, cached_tokens
 
 
