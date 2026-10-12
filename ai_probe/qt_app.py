@@ -130,8 +130,11 @@ class RelayHost(QObject):
 
 class QtRelayDialog(QDialog):
     def __init__(self, app):
-        super().__init__(app)
+        # 原生父窗口最小化会连带隐藏中转窗口，因此只保留控制器引用，不设置窗口父级。
+        super().__init__(None, Qt.Window)
         self.app = app
+        self.setAttribute(Qt.WA_QuitOnClose, False)
+        self.setStyleSheet(app.styleSheet())
         self.setWindowTitle("订阅与本地中转")
         self.resize(900, 700)
         self.setModal(False)
@@ -242,10 +245,19 @@ class QtRelayDialog(QDialog):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         self.stats_summary = QLabel("")
+        self.stats_summary.setWordWrap(True)
         layout.addWidget(self.stats_summary)
-        self.stats_table = QTableWidget(0, 7)
-        self.stats_table.setHorizontalHeaderLabels(["排名", "项目-模型", "请求", "输入", "输出", "总量", "缓存率"])
+        self.stats_table = QTableWidget(0, 8)
+        self.stats_table.setHorizontalHeaderLabels(
+            ["排名", "项目-模型", "请求", "输入", "输出", "总量", "已缓存", "缓存率"]
+        )
+        self.stats_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.stats_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.stats_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.stats_table.horizontalHeaderItem(6).setToolTip("已缓存的输入 Token 数，已包含在输入与总量中")
+        self.stats_table.horizontalHeaderItem(7).setToolTip(
+            "缓存率 = 已缓存 / 输入；>90% 绿色，70%–90% 蓝色，40%–<70% 橙色，<40% 红色；无输入时不着色"
+        )
         layout.addWidget(self.stats_table, 1)
         clear = QPushButton("清空今日统计")
         clear.clicked.connect(self._clear_stats)
@@ -360,6 +372,18 @@ class QtRelayDialog(QDialog):
             self.app.usage_stats.clear_today()
             self.refresh_stats()
 
+    @staticmethod
+    def _cache_rate_color(input_tokens, cached_tokens):
+        if input_tokens <= 0:
+            return None
+        if cached_tokens * 100 > input_tokens * 90:
+            return QColor("#087f23")
+        if cached_tokens * 100 >= input_tokens * 70:
+            return QColor("#1565c0")
+        if cached_tokens * 100 >= input_tokens * 40:
+            return QColor("#b06000")
+        return QColor("#c9342b")
+
     def refresh_stats(self):
         snapshot = self.app.usage_stats.snapshot()
         input_tokens = int(snapshot.get("input_tokens", 0))
@@ -367,9 +391,12 @@ class QtRelayDialog(QDialog):
         cached = int(snapshot.get("cached_tokens", 0))
         total = input_tokens + output_tokens
         cache_rate = f"{cached / input_tokens * 100:.1f}%" if input_tokens else "-"
+        cache_color = self._cache_rate_color(input_tokens, cached)
+        if cache_color is not None:
+            cache_rate = f'<span style="color: {cache_color.name()}; font-weight: 600">{cache_rate}</span>'
         self.stats_summary.setText(
             f"请求 {snapshot.get('requests', 0)} · 输入 {input_tokens:,} · 输出 {output_tokens:,} · "
-            f"总量 {total:,} · 缓存 {cache_rate}"
+            f"总量 {total:,} · 已缓存 {cached:,} · 缓存率 {cache_rate}"
         )
         rows = list(snapshot.get("models", {}).values())
         rows.sort(key=lambda row: row.get("input_tokens", 0) + row.get("output_tokens", 0), reverse=True)
@@ -378,6 +405,7 @@ class QtRelayDialog(QDialog):
             in_count = int(row.get("input_tokens", 0))
             out_count = int(row.get("output_tokens", 0))
             cached_count = int(row.get("cached_tokens", 0))
+            cache_color = self._cache_rate_color(in_count, cached_count)
             values = [
                 str(index + 1),
                 f"{row.get('project_name', '')}-{row.get('model', '')}",
@@ -385,10 +413,18 @@ class QtRelayDialog(QDialog):
                 f"{in_count:,}",
                 f"{out_count:,}",
                 f"{in_count + out_count:,}",
+                f"{cached_count:,}",
                 f"{cached_count / in_count * 100:.1f}%" if in_count else "-",
             ]
             for col, value in enumerate(values):
-                self.stats_table.setItem(index, col, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                if col == 7 and cache_color is not None:
+                    item.setForeground(cache_color)
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                self.stats_table.setItem(index, col, item)
 
     def closeEvent(self, event):
         self.app.commit_form()
@@ -1680,7 +1716,10 @@ class QtMainWindow(QMainWindow):
         if self.relay_dialog is None:
             self.relay_dialog = QtRelayDialog(self)
         self.relay_dialog.refresh_projects()
-        self.relay_dialog.show()
+        if self.relay_dialog.isMinimized():
+            self.relay_dialog.showNormal()
+        else:
+            self.relay_dialog.show()
         self.relay_dialog.raise_()
         self.relay_dialog.activateWindow()
 

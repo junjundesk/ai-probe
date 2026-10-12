@@ -15,7 +15,15 @@ from ai_probe.store_service import StoreService, default_store, normalize_store
 try:
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QPlainTextEdit, QTableWidget
+    from PySide6.QtWidgets import (
+        QAbstractItemView,
+        QApplication,
+        QDialog,
+        QLineEdit,
+        QMessageBox,
+        QPlainTextEdit,
+        QTableWidget,
+    )
 
     from ai_probe.qt_app import QtMainWindow
 
@@ -694,6 +702,116 @@ class ChannelImportDuplicateTests(unittest.TestCase):
 
 
 @unittest.skipUnless(QT_AVAILABLE, QT_SKIP_REASON)
+class RelayStatisticsTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        root = Path(self.directory.name)
+        self.window = QtMainWindow(
+            b"0123456789abcdef0123456789abcdef", data_file=root / "config.json", usage_file=root / "usage.json"
+        )
+        self.addCleanup(self._close_window)
+        self.window.open_relay()
+        self.dialog = self.window.relay_dialog
+        self.dialog.refresh_timer.stop()
+        self.dialog.tabs.setCurrentWidget(self.dialog.stats_tab)
+        _QT_APP.processEvents()
+
+    def _close_window(self):
+        self.window.close()
+        _QT_APP.processEvents()
+
+    def test_cached_counts_and_totals_are_displayed_without_double_counting(self):
+        project = self.window.project()
+        self.window.usage_stats.record(project, "small", 1_000, 0, 0)
+        self.window.usage_stats.record(project, "large", 10_000, 1_500, 9_500)
+        self.dialog.refresh_stats()
+        table = self.dialog.stats_table
+        self.assertEqual(table.columnCount(), 8)
+        self.assertEqual(table.horizontalHeaderItem(6).text(), "已缓存")
+        self.assertEqual(table.horizontalHeaderItem(7).text(), "缓存率")
+        self.assertEqual(
+            [table.item(0, col).text() for col in range(8)],
+            ["1", f"{project['name']}-large", "1", "10,000", "1,500", "11,500", "9,500", "95.0%"],
+        )
+        self.assertEqual([table.item(1, col).text() for col in (3, 4, 5, 6, 7)], ["1,000", "0", "1,000", "0", "0.0%"])
+        summary = self.dialog.stats_summary.text()
+        self.assertIn("请求 2 · 输入 11,000 · 输出 1,500 · 总量 12,500 · 已缓存 9,500", summary)
+        self.assertIn("86.4%", summary)
+        self.assertIn("#1565c0", summary)
+
+    def test_statistics_stay_read_only_after_refresh_and_edit_gestures(self):
+        self.window.usage_stats.record(self.window.project(), "model", 1_000, 200, 950)
+        table = self.dialog.stats_table
+        for _ in range(2):
+            self.dialog.refresh_stats()
+            _QT_APP.processEvents()
+            self.assertEqual(table.editTriggers(), QAbstractItemView.NoEditTriggers)
+            for col in range(table.columnCount()):
+                item = table.item(0, col)
+                self.assertFalse(item.flags() & Qt.ItemIsEditable)
+                self.assertTrue(item.flags() & Qt.ItemIsEnabled)
+                self.assertTrue(item.flags() & Qt.ItemIsSelectable)
+                table.scrollToItem(item)
+                table.setCurrentItem(item)
+                original = item.text()
+                QTest.mouseDClick(table.viewport(), Qt.LeftButton, pos=table.visualItemRect(item).center())
+                QTest.keyClick(table, Qt.Key_F2)
+                QTest.keyClicks(table, "999")
+                _QT_APP.processEvents()
+                self.assertEqual(item.text(), original)
+                self.assertNotEqual(table.state(), QAbstractItemView.EditingState)
+                self.assertFalse(any(editor.isVisible() for editor in table.findChildren(QLineEdit)))
+        self.assertNotEqual(self.window.manual_headers.editTriggers(), QAbstractItemView.NoEditTriggers)
+
+    def test_cache_rate_colors_follow_exact_boundaries_and_reset_on_refresh(self):
+        cases = [
+            (10_000, 10_000, "100.0%", "#087f23"),
+            (0, 0, "-", None),
+            (10_000, 0, "0.0%", "#c9342b"),
+            (10_000, 3_999, "40.0%", "#c9342b"),
+            (10_000, 4_000, "40.0%", "#b06000"),
+            (10_000, 6_999, "70.0%", "#b06000"),
+            (10_000, 7_000, "70.0%", "#1565c0"),
+            (10_000, 9_000, "90.0%", "#1565c0"),
+            (10_000, 9_001, "90.0%", "#087f23"),
+            (0, 0, "-", None),
+        ]
+        for input_tokens, cached_tokens, text, color in cases:
+            with self.subTest(input_tokens=input_tokens, cached_tokens=cached_tokens):
+                usage = {
+                    "requests": 1,
+                    "input_tokens": input_tokens,
+                    "output_tokens": 0,
+                    "cached_tokens": cached_tokens,
+                }
+                snapshot = {**usage, "models": {"model": {**usage, "project_name": "test", "model": "model"}}}
+                with mock.patch.object(self.window.usage_stats, "snapshot", return_value=snapshot):
+                    self.dialog.refresh_stats()
+                item = self.dialog.stats_table.item(0, 7)
+                self.assertEqual(item.text(), text)
+                self.assertIn(text, self.dialog.stats_summary.text())
+                if color is None:
+                    self.assertEqual(item.foreground().style(), Qt.NoBrush)
+                    self.assertNotIn("<span", self.dialog.stats_summary.text())
+                    self.assertFalse(item.font().bold())
+                else:
+                    self.assertEqual(item.foreground().color().name(), color)
+                    self.assertIn(color, self.dialog.stats_summary.text())
+                    self.assertTrue(item.font().bold())
+                self.assertEqual(self.dialog.stats_table.item(0, 1).foreground().style(), Qt.NoBrush)
+
+    def test_clearing_today_resets_cached_quantity_and_rate(self):
+        self.window.usage_stats.record(self.window.project(), "model", 1_000, 200, 950)
+        self.dialog.refresh_stats()
+        with mock.patch("ai_probe.qt_app.QMessageBox.question", return_value=QMessageBox.Yes):
+            self.dialog._clear_stats()
+        self.assertEqual(self.dialog.stats_table.rowCount(), 0)
+        self.assertEqual(self.dialog.stats_summary.text(), "请求 0 · 输入 0 · 输出 0 · 总量 0 · 已缓存 0 · 缓存率 -")
+        self.assertEqual(self.dialog.stats_table.editTriggers(), QAbstractItemView.NoEditTriggers)
+
+
+@unittest.skipUnless(QT_AVAILABLE, QT_SKIP_REASON)
 class ModelCollectionTests(unittest.TestCase):
     """远程模型收集与测活的并发行为，随界面迁移到 Qt 后仍需保持。"""
 
@@ -801,6 +919,98 @@ class MinimizeFallbackTests(unittest.TestCase):
                 window.restore_from_tray()
                 _QT_APP.processEvents()
                 self.assertFalse(window.isHidden())
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_relay_window_is_independent_and_remains_visible_when_main_minimizes(self):
+        for mode in ("native", "taskbar", "tray"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                window = self._window_with_projects(directory)
+                try:
+                    window.open_relay()
+                    _QT_APP.processEvents()
+                    dialog = window.relay_dialog
+                    self.assertIsNone(dialog.parentWidget())
+                    self.assertIsNone(dialog.windowHandle().transientParent())
+                    self.assertEqual(dialog.windowType(), Qt.Window)
+                    self.assertFalse(dialog.testAttribute(Qt.WA_QuitOnClose))
+                    if mode == "native":
+                        window.showMinimized()
+                    else:
+                        window.tray_available = mode == "tray"
+                        window.minimize_to_tray()
+                    _QT_APP.processEvents()
+                    self.assertTrue(window.isHidden() if mode == "tray" else window.isMinimized())
+                    self.assertTrue(dialog.isVisible())
+                    self.assertFalse(dialog.isMinimized())
+                    self.assertTrue(dialog.refresh_timer.isActive())
+                finally:
+                    window.close()
+                    _QT_APP.processEvents()
+
+    def test_open_relay_restores_its_minimized_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = self._window_with_projects(directory)
+            try:
+                window.open_relay()
+                dialog = window.relay_dialog
+                dialog.showMinimized()
+                _QT_APP.processEvents()
+                self.assertTrue(dialog.isMinimized())
+                window.open_relay()
+                _QT_APP.processEvents()
+                self.assertIs(window.relay_dialog, dialog)
+                self.assertTrue(dialog.isVisible())
+                self.assertFalse(dialog.isMinimized())
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_closing_relay_while_main_is_hidden_preserves_service_and_allows_reopening(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = self._window_with_projects(directory)
+            try:
+                window.open_relay()
+                dialog = window.relay_dialog
+                relay_server = mock.Mock(host="127.0.0.1", port=8040)
+                window.relay_server = relay_server
+                window.tray_available = True
+                window.minimize_to_tray()
+                _QT_APP.processEvents()
+                self.assertFalse(dialog.testAttribute(Qt.WA_QuitOnClose))
+                dialog.close()
+                _QT_APP.processEvents()
+                self.assertIsNone(window.relay_dialog)
+                self.assertFalse(dialog.refresh_timer.isActive())
+                self.assertTrue(window.isHidden())
+                self.assertIs(window.relay_server, relay_server)
+                relay_server.stop.assert_not_called()
+                window.restore_from_tray()
+                window.open_relay()
+                _QT_APP.processEvents()
+                self.assertIsNot(window.relay_dialog, dialog)
+                self.assertTrue(window.relay_dialog.isVisible())
+                self.assertTrue(window.relay_dialog.refresh_timer.isActive())
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_closing_main_still_closes_independent_relay_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = self._window_with_projects(directory)
+            try:
+                window.open_relay()
+                dialog = window.relay_dialog
+                relay_server = mock.Mock()
+                window.relay_server = relay_server
+                window.close()
+                _QT_APP.processEvents()
+                self.assertFalse(dialog.isVisible())
+                self.assertFalse(dialog.refresh_timer.isActive())
+                self.assertIsNone(window.relay_dialog)
+                self.assertIsNone(window.relay_server)
+                relay_server.stop.assert_called_once_with()
             finally:
                 window.close()
                 _QT_APP.processEvents()
