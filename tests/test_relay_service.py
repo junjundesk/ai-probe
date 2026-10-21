@@ -21,6 +21,24 @@ def _store_with_enabled_project() -> dict:
     return store
 
 
+_LOG_DIR = tempfile.TemporaryDirectory()
+_LOG_PATCHERS = (
+    patch("ai_probe.relay.RELAY_ERROR_LOG", Path(_LOG_DIR.name) / "relay-errors.jsonl"),
+    patch("ai_probe.relay.RELAY_REQUEST_LOG", Path(_LOG_DIR.name) / "relay-requests.jsonl"),
+)
+
+
+def setUpModule():
+    for patcher in _LOG_PATCHERS:
+        patcher.start()
+
+
+def tearDownModule():
+    for patcher in _LOG_PATCHERS:
+        patcher.stop()
+    _LOG_DIR.cleanup()
+
+
 class RelayServiceTests(unittest.TestCase):
     def test_env_overrides_apply_and_ignore_blank_values(self):
         store = {"relay": {"host": "127.0.0.1", "port": 8040, "api_key": "", "user_agent": ""}}
@@ -68,6 +86,7 @@ class RelayServiceTests(unittest.TestCase):
             StoreService(key, path).save(_store_with_enabled_project())
             with (
                 patch.object(relay_service, "DATA_FILE", path),
+                patch.object(relay_service, "CONFIG_KEY_FILE", Path(directory) / "ai_probe_config.key"),
                 patch.dict(os.environ, {"AI_PROBE_CONFIG_PASSWORD": "unit-test-password"}, clear=False),
             ):
                 self.assertEqual(resolve_config_key(), key)
@@ -150,6 +169,21 @@ class RelayServiceTests(unittest.TestCase):
             self.assertTrue(module.healthcheck())
         # 容器里监听 0.0.0.0，探活必须打到回环地址。
         self.assertEqual(captured["url"], "http://127.0.0.1:9000/v1/models")
+
+
+class StoreServiceKeyPathTests(unittest.TestCase):
+    def test_activate_import_writes_key_next_to_data_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_file = Path(directory) / "config.json"
+            service = StoreService(b"0123456789abcdef0123456789abcdef", data_file)
+            with patch("ai_probe.store_service.save_config_key") as save_key:
+                service.activate_import(default_store(), b"fedcba9876543210fedcba9876543210")
+
+            # 密钥必须跟着数据目录走，否则测试会覆盖真实应用目录里的密钥文件。
+            save_key.assert_called_once_with(
+                b"fedcba9876543210fedcba9876543210", Path(directory) / "ai_probe_config.key"
+            )
+            self.assertEqual(service.key_file, Path(directory) / "ai_probe_config.key")
 
 
 if __name__ == "__main__":

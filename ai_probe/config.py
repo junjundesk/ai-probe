@@ -60,8 +60,14 @@ def _config_key(secret: str | bytes) -> bytes:
     return secret if isinstance(secret, bytes) else _derive_config_key(secret)
 
 
-def save_config_key(key: bytes):
-    CONFIG_KEY_FILE.write_text(key.decode("ascii") + "\n", encoding="utf-8")
+def save_config_key(key: bytes, path: Path | None = None):
+    """把配置密钥写入指定路径，默认是应用数据目录里的密钥文件。
+
+    StoreService 会传入自己数据目录下的路径，避免测试或自定义数据目录
+    把密钥写到正在使用的应用目录里。
+    """
+    target = Path(path) if path is not None else CONFIG_KEY_FILE
+    target.write_text(key.decode("ascii") + "\n", encoding="utf-8")
 
 
 def encrypt_config(data: dict, secret: str | bytes | None = None) -> str:

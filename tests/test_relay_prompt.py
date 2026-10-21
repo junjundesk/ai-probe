@@ -1,13 +1,32 @@
 import copy
 import json
+import tempfile
 import unittest
 from http.client import HTTPConnection
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from ai_probe.protocols import _convert_request
 from ai_probe.relay import RelayServer, _inject_system_prompt
 from ai_probe.store_service import normalize_store
+
+_LOG_DIR = tempfile.TemporaryDirectory()
+_LOG_PATCHERS = (
+    patch("ai_probe.relay.RELAY_ERROR_LOG", Path(_LOG_DIR.name) / "relay-errors.jsonl"),
+    patch("ai_probe.relay.RELAY_REQUEST_LOG", Path(_LOG_DIR.name) / "relay-requests.jsonl"),
+)
+
+
+def setUpModule():
+    for patcher in _LOG_PATCHERS:
+        patcher.start()
+
+
+def tearDownModule():
+    for patcher in _LOG_PATCHERS:
+        patcher.stop()
+    _LOG_DIR.cleanup()
 
 
 class RelayPromptTests(unittest.TestCase):
@@ -93,7 +112,6 @@ class RelayPromptTests(unittest.TestCase):
             custom_headers={},
             base_url="https://example.test/v1",
             proxies={},
-            verify_ssl=True,
         )
         response = Mock(ok=False, status_code=400, text='{"error":{"message":"test response"}}', headers={})
         response.json.return_value = {"error": {"message": "test response"}}
@@ -117,7 +135,8 @@ class RelayPromptTests(unittest.TestCase):
                         )
                         result = connection.getresponse()
                         result.read()
-                        self.assertEqual(result.status, 502)
+                        # 上游 400 原样透传，客户端才知道这是请求本身的问题、不必重试。
+                        self.assertEqual(result.status, 400)
                     finally:
                         connection.close()
                     self.assertEqual(post.call_args.kwargs["json"]["instructions"], expected)

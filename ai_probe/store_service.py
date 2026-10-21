@@ -64,7 +64,8 @@ def normalize_store(data: dict) -> dict:
         project.setdefault("api_key", "")
         project.setdefault("api_keys", [])
         project.setdefault("proxy_url", "")
-        project.setdefault("skip_ssl_verify", False)
+        # SSL 校验已改为全局关闭，旧配置里的开关字段直接丢弃。
+        project.pop("skip_ssl_verify", None)
         project.setdefault("api_mode", "chat")
         project.setdefault("test_prompt", "")
         project.setdefault("headers_mode", "json")
@@ -142,6 +143,11 @@ class StoreService:
         self.data_file = Path(data_file)
         self.loaded_plaintext = False
 
+    @property
+    def key_file(self) -> Path:
+        """与数据文件同目录的密钥文件；测试和容器数据目录因此互不影响。"""
+        return self.data_file.parent / "ai_probe_config.key"
+
     def load(self) -> dict:
         if not self.data_file.exists():
             return default_store()
@@ -185,4 +191,4 @@ class StoreService:
         if imported_key is not None:
             self.config_key = imported_key
         self.save(data)
-        save_config_key(self.config_key)
+        save_config_key(self.config_key, self.key_file)

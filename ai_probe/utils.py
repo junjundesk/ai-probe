@@ -270,20 +270,84 @@ def extract_stream_text(payload: dict, api_mode: str) -> str:
     return ""
 
 
+_SSE_DATA_PREFIX = "data:"
+
+
+def _decode_response_body(response) -> str:
+    """按 UTF-8 解码响应体。
+
+    requests 对没有声明 charset 的响应（例如上游用 text/event-stream 返回错误）
+    会退回 ISO-8859-1，中文错误信息会变成乱码，所以这里自己按 UTF-8 解码。
+    """
+    content = getattr(response, "content", None)
+    if isinstance(content, (bytes, bytearray)) and content:
+        raw = bytes(content)
+        for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return raw.decode("utf-8", "replace")
+    return str(getattr(response, "text", "") or "")
+
+
+def _error_message_from_payload(payload) -> str:
+    error = payload.get("error", payload) if isinstance(payload, dict) else payload
+    if isinstance(error, dict):
+        message = error.get("message") or error.get("detail") or error.get("type")
+        if isinstance(message, dict):
+            message = message.get("message") or message.get("detail")
+        if message:
+            return str(message)
+    if isinstance(error, str):
+        return error
+    return ""
+
+
+def _error_message_from_sse(text: str) -> str:
+    """从 SSE 错误帧（event: error / data: {...}）里取出 message。"""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith(_SSE_DATA_PREFIX):
+            continue
+        data = line[len(_SSE_DATA_PREFIX) :].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except ValueError:
+            continue
+        message = _error_message_from_payload(payload)
+        if message:
+            return message
+    return ""
+
+
 def error_message_from_response(response) -> str:
+    """提取上游错误信息，兼容 JSON、SSE 错误帧和纯文本，并强制按 UTF-8 解码。"""
+    text = _decode_response_body(response)[:200_000]
+    if text.strip():
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            payload = None
+        if payload is not None:
+            message = _error_message_from_payload(payload)
+            if message:
+                return message
+        message = _error_message_from_sse(text)
+        if message:
+            return message
     try:
         payload = response.json()
-        error = payload.get("error", payload) if isinstance(payload, dict) else payload
-        if isinstance(error, dict):
-            message = error.get("message") or error.get("detail") or error.get("type")
-            if message:
-                return str(message)
-        if isinstance(error, str):
-            return error
     except (ValueError, TypeError):
-        pass
-    text = (response.text or "").strip().replace("\n", " ")
-    return text[:500] or response.reason or "请求失败"
+        payload = None
+    if payload is not None:
+        message = _error_message_from_payload(payload)
+        if message:
+            return message
+    text = " ".join(text.split())
+    return text[:500] or str(getattr(response, "reason", "") or "") or "请求失败"
 
 
 def _is_function_only_tools_error(message: str) -> bool:

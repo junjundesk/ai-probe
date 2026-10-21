@@ -347,6 +347,36 @@ def _sanitize_anthropic_messages(messages: list[dict]) -> list[dict]:
     return repaired
 
 
+_THINKING_TYPES_WITH_BUDGET = {"enabled", "disabled"}
+
+
+def _normalize_anthropic_thinking(body: dict) -> dict:
+    """把预算式 thinking 收敛成上游普遍接受的「自适应思考」写法。
+
+    Claude Code 风格的客户端（以及本中转从 reasoning_effort 生成的请求）默认发
+    thinking.type=enabled + budget_tokens；而 Opus 4.7/5.x 一类托管思考的上游只认
+    thinking.type=adaptive，会直接 400 拒绝，报「请求参数或能力可能不被支持」。
+    这里只改写 thinking 字段：预算换成自适应，display 原样保留，disabled 直接去掉
+    （上游不支持关闭思考时，省略字段等于用模型默认值）。未命中时返回原对象。
+    """
+    thinking = body.get("thinking")
+    if not isinstance(thinking, dict):
+        return body
+    kind = str(thinking.get("type") or "")
+    if kind not in _THINKING_TYPES_WITH_BUDGET:
+        return body
+    result = dict(body)
+    if kind == "disabled":
+        result.pop("thinking", None)
+        return result
+    adaptive = {"type": "adaptive"}
+    display = thinking.get("display")
+    if isinstance(display, str) and display:
+        adaptive["display"] = display
+    result["thinking"] = adaptive
+    return result
+
+
 def _chat_to_anthropic(body: dict) -> dict:
     messages = []
     system = []

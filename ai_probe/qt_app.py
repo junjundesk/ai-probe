@@ -596,12 +596,10 @@ class QtMainWindow(QMainWindow):
         self.advanced_box = QGroupBox("高级设置")
         advanced_layout = QVBoxLayout(self.advanced_box)
         advanced_form = QFormLayout()
-        self.skip_ssl = QCheckBox("跳过 SSL 证书校验")
         self.test_prompt = QPlainTextEdit()
         self.test_prompt.setMaximumHeight(75)
         self.test_prompt.setPlaceholderText("测活提示词")
         advanced_form.addRow("HTTP 代理", self.proxy_url)
-        advanced_form.addRow(self.skip_ssl)
         advanced_form.addRow("测活提示词", self.test_prompt)
         advanced_layout.addLayout(advanced_form)
         header_row = QHBoxLayout()
@@ -636,7 +634,6 @@ class QtMainWindow(QMainWindow):
         for field in (self.project_name, self.base_url, self.api_key, self.proxy_url):
             field.textChanged.connect(self.schedule_save)
         self.api_mode.currentIndexChanged.connect(self.schedule_save)
-        self.skip_ssl.stateChanged.connect(self.schedule_save)
         self.test_prompt.textChanged.connect(self.schedule_save)
         self.headers_json.textChanged.connect(self.schedule_save)
         return box
@@ -812,7 +809,6 @@ class QtMainWindow(QMainWindow):
         self.base_url.setText(str(project.get("base_url", "")))
         self.api_key.setText(str(project.get("api_key", "")))
         self.proxy_url.setText(str(project.get("proxy_url", "")))
-        self.skip_ssl.setChecked(bool(project.get("skip_ssl_verify", False)))
         mode = str(project.get("api_mode", "chat"))
         self.api_mode.setCurrentIndex(max(0, self.api_mode.findData(mode)))
         self.test_prompt.setPlainText(str(project.get("test_prompt", "")))
@@ -931,7 +927,6 @@ class QtMainWindow(QMainWindow):
             project["api_keys"] = [{"id": "default", "name": "默认", "value": key}]
         _sync_project_keys(project)
         project["proxy_url"] = self.proxy_url.text().strip()
-        project["skip_ssl_verify"] = self.skip_ssl.isChecked()
         project["api_mode"] = self.api_mode.currentData()
         project["test_prompt"] = self.test_prompt.toPlainText().strip()
         project["headers_mode"] = self.headers_mode.currentData()
@@ -1351,7 +1346,6 @@ class QtMainWindow(QMainWindow):
                     project.get("test_prompt", ""),
                     headers,
                     project.get("proxy_url", ""),
-                    verify_ssl=not bool(project.get("skip_ssl_verify", False)),
                 )
             return project["id"], clients
         except (ValueError, RuntimeError) as exc:

@@ -7,9 +7,11 @@ import time
 
 try:
     import requests
+    import urllib3
     from requests.adapters import HTTPAdapter
 except ImportError:
     requests = None
+    urllib3 = None
     HTTPAdapter = None
 
 from .config import (
@@ -33,6 +35,13 @@ _ORIGINAL_POST = requests.post if requests is not None else None
 
 _MAX_PROBE_REPLY_CHARS = 2000
 
+# 上游聚合商常用非常规证书链，证书校验失败会直接让测活和中转不可用。
+# 本地工具统一不校验上游证书；需要恢复校验时把这里改成 True。
+VERIFY_SSL = False
+
+if urllib3 is not None:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 class OpenAIClient:
     def __init__(
@@ -43,7 +52,6 @@ class OpenAIClient:
         test_prompt: str = "",
         custom_headers: dict[str, str] | None = None,
         proxy_url: str = "",
-        verify_ssl: bool = True,
     ):
         if requests is None:
             raise RuntimeError("缺少 requests，请先运行：pip install -r requirements.txt")
@@ -54,7 +62,6 @@ class OpenAIClient:
         self.custom_headers = custom_headers or {}
         self.proxy_url = normalize_proxy_url(proxy_url)
         self.proxies = {"http": self.proxy_url, "https": self.proxy_url} if self.proxy_url else None
-        self.verify_ssl = bool(verify_ssl)
         self.session = None
         if hasattr(requests, "Session") and HTTPAdapter is not None:
             self.session = requests.Session()
@@ -100,7 +107,7 @@ class OpenAIClient:
             headers=self.headers,
             timeout=(PROBE_CONNECT_TIMEOUT, 30),
             proxies=self.proxies,
-            verify=self.verify_ssl,
+            verify=VERIFY_SSL,
         )
         if not response.ok:
             raise RuntimeError(f"HTTP {response.status_code}: {error_message_from_response(response)}")
@@ -170,7 +177,7 @@ class OpenAIClient:
                 stream=True,
                 timeout=(PROBE_CONNECT_TIMEOUT, PROBE_READ_TIMEOUT),
                 proxies=self.proxies,
-                verify=self.verify_ssl,
+                verify=VERIFY_SSL,
             ) as response:
                 if not response.ok:
                     raise RuntimeError(f"HTTP {response.status_code}: {error_message_from_response(response)}")

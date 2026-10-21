@@ -1,7 +1,9 @@
+import json
 import unittest
 
 from ai_probe.utils import (
     compact_number,
+    error_message_from_response,
     extract_usage_tokens,
     format_cache_summary,
     normalize_base_url,
@@ -24,6 +26,38 @@ class CompactNumberTests(unittest.TestCase):
     def test_format_cache_summary(self):
         self.assertEqual(format_cache_summary(10_000, 8_750), "87.5%/8.8k")
         self.assertEqual(format_cache_summary(0, 0), "-")
+
+
+class FakeErrorResponse:
+    """模拟 requests.Response：content 是原始字节，text 按 ISO-8859-1 解码。"""
+
+    def __init__(self, content: bytes, text: str = "", reason: str = "Bad Request"):
+        self.content = content
+        self.text = text
+        self.reason = reason
+
+    def json(self):
+        raise ValueError("not json")
+
+
+class ErrorMessageTests(unittest.TestCase):
+    def test_decodes_utf8_json_body_without_charset(self):
+        body = json.dumps({"error": {"message": "分组下模型无可用渠道"}}, ensure_ascii=False).encode("utf-8")
+        response = FakeErrorResponse(body, text=body.decode("iso-8859-1"))
+
+        self.assertEqual(error_message_from_response(response), "分组下模型无可用渠道")
+
+    def test_extracts_message_from_sse_error_frame(self):
+        payload = {"type": "error", "error": {"type": "api_error", "message": "固定商家当前不可用。request_id: 123"}}
+        body = f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+        response = FakeErrorResponse(body, text=body.decode("iso-8859-1"))
+
+        self.assertEqual(error_message_from_response(response), "固定商家当前不可用。request_id: 123")
+
+    def test_falls_back_to_reason_when_body_is_empty(self):
+        response = FakeErrorResponse(b"", reason="Bad Gateway")
+
+        self.assertEqual(error_message_from_response(response), "Bad Gateway")
 
 
 class NormalizationTests(unittest.TestCase):

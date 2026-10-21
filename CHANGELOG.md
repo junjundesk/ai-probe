@@ -2,6 +2,20 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Fixed
+
+- 本地中转不再把所有上游失败都报成 502：上游返回 4xx/5xx 时原样透传状态码（401 与中转自身鉴权冲突，仍报 502），客户端可据此判断是否需要重试。
+- 修正上游用 `text/event-stream` 返回中文错误时的乱码：错误信息改为按 UTF-8 解码，并支持从 SSE 错误帧中提取 `message`。
+- 上游 TLS 连接失败时给出含目标主机的提示，并跳过注定失败的重试握手。
+- 修正导入配置时 `StoreService` 把密钥写到当前应用目录、覆盖本地 `ai_probe_config.key` 的问题：密钥文件改为跟随数据目录；中转相关测试也改为写入临时日志目录，不再污染 `logs/`。
+- 修正发往 Claude 上游的请求格式：Claude Code 风格客户端默认发预算式 `thinking`（`type=enabled` + `budget_tokens`），而 Opus 4.7/5.x 一类上游只接受自适应思考，会直接 400 拒绝。中转现在收到 400/422 时改用 `thinking.type=adaptive` 重试一次，并记住该项目，后续请求直接发兼容写法。
+
+### Changed
+
+- 移除「跳过 SSL 证书校验」开关：测活与中转对所有上游请求一律不校验证书（`ai_probe.client.VERIFY_SSL = False`），并屏蔽 urllib3 的不安全请求告警。
+
 ## [1.1.4] - 2026-10-08
 
 ### Added

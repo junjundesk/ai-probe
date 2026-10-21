@@ -1,4 +1,5 @@
 import json
+import tempfile
 import time
 import unittest
 from http.client import HTTPConnection
@@ -7,18 +8,38 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import requests
+
 from ai_probe.protocols import (
     _anthropic_to_chat,
     _canonical_stream_events,
     _chat_to_anthropic,
     _convert_request,
     _include_stream_usage,
+    _normalize_anthropic_thinking,
     _request_mode,
     _responses_custom_to_function,
     _responses_to_chat,
     _StreamRenderer,
 )
 from ai_probe.relay import RelayServer, _prepare_responses_upstream_body
+
+_LOG_DIR = tempfile.TemporaryDirectory()
+_LOG_PATCHERS = (
+    patch("ai_probe.relay.RELAY_ERROR_LOG", Path(_LOG_DIR.name) / "relay-errors.jsonl"),
+    patch("ai_probe.relay.RELAY_REQUEST_LOG", Path(_LOG_DIR.name) / "relay-requests.jsonl"),
+)
+
+
+def setUpModule():
+    for patcher in _LOG_PATCHERS:
+        patcher.start()
+
+
+def tearDownModule():
+    for patcher in _LOG_PATCHERS:
+        patcher.stop()
+    _LOG_DIR.cleanup()
 
 
 class RequestModeTests(unittest.TestCase):
@@ -749,14 +770,22 @@ class RelayErrorLoggingTests(unittest.TestCase):
 
     @staticmethod
     def post(server, payload, headers=None):
+        return RelayErrorLoggingTests.post_to(server, "/v1/responses", payload, headers)
+
+    @staticmethod
+    def post_to(server, path, payload, headers=None):
+        return RelayErrorLoggingTests.post_json(server, path, payload, headers)[0]
+
+    @staticmethod
+    def post_json(server, path, payload, headers=None):
         connection = HTTPConnection("127.0.0.1", server.port, timeout=3)
         request_headers = {"Content-Type": "application/json", **(headers or {})}
-        connection.request("POST", "/v1/responses", json.dumps(payload), request_headers)
+        connection.request("POST", path, json.dumps(payload), request_headers)
         response = connection.getresponse()
-        response.read()
+        body = response.read().decode("utf-8")
         status = response.status
         connection.close()
-        return status
+        return status, body
 
     def test_relay_logs_404_details_and_respects_switch(self):
         app = self.App({"projects": [], "relay": {"project_ids": []}})
@@ -809,7 +838,7 @@ class RelayErrorLoggingTests(unittest.TestCase):
             entry = json.loads(log_path.read_text(encoding="utf-8").strip())
             self.assertEqual(entry["status"], 400)
 
-    def test_relay_logs_502_upstream_attempt(self):
+    def test_relay_passes_through_upstream_status(self):
         project = {
             "id": "project-test",
             "name": "test",
@@ -817,7 +846,6 @@ class RelayErrorLoggingTests(unittest.TestCase):
             "api_key": "upstream-secret",
             "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
             "proxy_url": "",
-            "skip_ssl_verify": False,
             "api_mode": "responses",
             "headers_mode": "json",
             "custom_headers": "",
@@ -864,7 +892,7 @@ class RelayErrorLoggingTests(unittest.TestCase):
             log_path = server._current_log_path()
             server.start()
             try:
-                self.assertEqual(self.post(server, payload), 502)
+                self.assertEqual(self.post(server, payload), 404)
             finally:
                 server.stop()
 
@@ -875,13 +903,173 @@ class RelayErrorLoggingTests(unittest.TestCase):
             )
             self.assertEqual(upstream_input[-1]["content"][0]["text"], "done")
             entry = json.loads(log_path.read_text(encoding="utf-8").strip())
-            self.assertEqual(entry["status"], 502)
+            self.assertEqual(entry["status"], 404)
             self.assertEqual(entry["attempts"][0]["upstream_status"], 404)
             self.assertEqual(entry["attempts"][0]["upstream_error"], "upstream missing")
             self.assertEqual(entry["attempts"][0]["upstream_trace"], {"content-type": "application/json"})
             self.assertNotIn("upstream_headers", entry["attempts"][0])
             self.assertNotIn("upstream_body", entry["attempts"][0])
             self.assertNotIn("upstream_response_headers", entry["attempts"][0])
+
+    def test_relay_passes_through_upstream_overload_status(self):
+        project = {
+            "id": "project-test",
+            "name": "test",
+            "base_url": "https://api.example.test/v1",
+            "api_key": "upstream-secret",
+            "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
+            "proxy_url": "",
+            "api_mode": "anthropic",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "claude-test", "api_key_id": "key-test"}],
+        }
+        app = self.App({"projects": [project], "relay": {"project_ids": ["project-test"]}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
+        message = "分组 【自营优选】特殊分组 下模型 claude-test 无可用渠道（distributor）"
+        frame = f"event: error\ndata: {json.dumps({'error': {'message': message}}, ensure_ascii=False)}\n\n".encode()
+
+        class UpstreamResponse:
+            ok = False
+            status_code = 503
+            headers = {"Content-Type": "text/event-stream"}
+            reason = "Service Unavailable"
+            content = frame
+            text = frame.decode("iso-8859-1")
+
+            def json(self):
+                raise ValueError("not json")
+
+            def close(self):
+                pass
+
+        with patch("ai_probe.relay.requests.post", return_value=UpstreamResponse()):
+            server.start()
+            try:
+                status, body = self.post_json(
+                    server,
+                    "/v1/messages",
+                    {"model": "claude-test", "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]},
+                )
+            finally:
+                server.stop()
+
+        self.assertEqual(status, 503)
+        error = json.loads(body)["error"]
+        self.assertEqual(error["type"], "overloaded_error")
+        self.assertIn(message, error["message"])
+
+    def test_relay_reports_tls_failure_with_upstream_host(self):
+        project = {
+            "id": "project-test",
+            "name": "test",
+            "base_url": "https://api.a6api.com",
+            "api_key": "upstream-secret",
+            "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
+            "proxy_url": "",
+            "api_mode": "anthropic",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "claude-test", "api_key_id": "key-test"}],
+        }
+        app = self.App({"projects": [project], "relay": {"project_ids": ["project-test"]}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
+        failure = requests.exceptions.SSLError(
+            "HTTPSConnectionPool(host='api.a6api.com', port=443): Max retries exceeded with url: /v1/messages "
+            "(Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify "
+            "failed: unable to get local issuer certificate (_ssl.c:1018)')))"
+        )
+        with patch("ai_probe.relay.requests.post", side_effect=failure) as upstream_post:
+            server.start()
+            try:
+                status, body = self.post_json(
+                    server,
+                    "/v1/messages",
+                    {"model": "claude-test", "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]},
+                )
+            finally:
+                server.stop()
+
+        self.assertEqual(status, 502)
+        message = json.loads(body)["error"]["message"]
+        self.assertIn("TLS 连接失败", message)
+        self.assertIn("api.a6api.com", message)
+        self.assertEqual(upstream_post.call_count, 1)
+
+    def test_relay_reports_upstream_timeout_as_gateway_timeout(self):
+        project = {
+            "id": "project-test",
+            "name": "test",
+            "base_url": "https://api.example.test/v1",
+            "api_key": "upstream-secret",
+            "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
+            "proxy_url": "",
+            "api_mode": "anthropic",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "claude-test", "api_key_id": "key-test"}],
+        }
+        app = self.App({"projects": [project], "relay": {"project_ids": ["project-test"]}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
+        with patch("ai_probe.relay.requests.post", side_effect=requests.exceptions.ReadTimeout("read timeout=300")):
+            server.start()
+            try:
+                status, body = self.post_json(
+                    server,
+                    "/v1/messages",
+                    {"model": "claude-test", "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]},
+                )
+            finally:
+                server.stop()
+
+        self.assertEqual(status, 504)
+        self.assertEqual(json.loads(body)["error"]["type"], "upstream_timeout")
+
+    def test_relay_hides_upstream_auth_failure_behind_gateway_error(self):
+        project = {
+            "id": "project-test",
+            "name": "test",
+            "base_url": "https://api.example.test/v1",
+            "api_key": "upstream-secret",
+            "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
+            "proxy_url": "",
+            "api_mode": "anthropic",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "claude-test", "api_key_id": "key-test"}],
+        }
+        app = self.App({"projects": [project], "relay": {"project_ids": ["project-test"]}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=True)
+
+        class UpstreamResponse:
+            ok = False
+            status_code = 401
+            headers = {"Content-Type": "application/json"}
+            reason = "Unauthorized"
+            text = '{"error":{"message":"invalid upstream key"}}'
+
+            def json(self):
+                return {"error": {"message": "invalid upstream key"}}
+
+            def close(self):
+                pass
+
+        with patch("ai_probe.relay.requests.post", return_value=UpstreamResponse()):
+            server.start()
+            try:
+                status, body = self.post_json(
+                    server,
+                    "/v1/messages",
+                    {"model": "claude-test", "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]},
+                )
+            finally:
+                server.stop()
+
+        # 上游 401 会和本地中转密钥混淆，统一报 502，但保留上游说明。
+        self.assertEqual(status, 502)
+        error = json.loads(body)["error"]
+        self.assertEqual(error["type"], "api_error")
+        self.assertIn("invalid upstream key", error["message"])
 
     def test_relay_stream_502_ends_with_response_completed(self):
         project = {
@@ -891,7 +1079,6 @@ class RelayErrorLoggingTests(unittest.TestCase):
             "api_key": "upstream-secret",
             "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
             "proxy_url": "",
-            "skip_ssl_verify": False,
             "api_mode": "responses",
             "headers_mode": "json",
             "custom_headers": "",
@@ -959,7 +1146,6 @@ class RelayErrorLoggingTests(unittest.TestCase):
             "api_key": "upstream-secret",
             "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
             "proxy_url": "",
-            "skip_ssl_verify": False,
             "api_mode": "responses",
             "headers_mode": "json",
             "custom_headers": "",
@@ -1100,7 +1286,6 @@ class RelayErrorLoggingTests(unittest.TestCase):
             "api_key": "upstream-secret",
             "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
             "proxy_url": "",
-            "skip_ssl_verify": False,
             "api_mode": "responses",
             "headers_mode": "json",
             "custom_headers": "",
@@ -1192,7 +1377,6 @@ class RelayErrorLoggingTests(unittest.TestCase):
             "api_key": "upstream-secret",
             "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
             "proxy_url": "",
-            "skip_ssl_verify": False,
             "api_mode": "responses",
             "headers_mode": "json",
             "custom_headers": "",
@@ -1311,7 +1495,6 @@ class RelayRouteSnapshotTests(unittest.TestCase):
             "api_key": "upstream-secret",
             "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
             "proxy_url": "",
-            "skip_ssl_verify": False,
             "api_mode": "chat",
             "headers_mode": "json",
             "custom_headers": "",
@@ -1344,6 +1527,240 @@ class RelayRouteSnapshotTests(unittest.TestCase):
                 server.stop()
 
         self.assertEqual(upstream_post.call_args.kwargs["json"]["model"], "gpt5.6-sol")
+
+
+class AnthropicThinkingTests(unittest.TestCase):
+    """Claude 5.x 上游只接受自适应思考，预算式 thinking 要能自动降级重试。"""
+
+    App = RelayErrorLoggingTests.App
+
+    class UpstreamJSON:
+        def __init__(self, ok: bool, status_code: int, payload: dict):
+            self.ok = ok
+            self.status_code = status_code
+            self.headers = {"Content-Type": "application/json"}
+            self.content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.reason = "Bad Request"
+
+        def iter_content(self, chunk_size=8192):
+            yield self.content
+
+        def json(self):
+            return json.loads(self.content)
+
+        def close(self):
+            pass
+
+    @staticmethod
+    def _project() -> dict:
+        return {
+            "id": "claude-project",
+            "name": "claude",
+            "base_url": "https://claude.test/v1",
+            "api_key": "sk-test",
+            "api_keys": [{"id": "key-1", "name": "default", "value": "sk-test"}],
+            "proxy_url": "",
+            "api_mode": "anthropic",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "claude-opus-5-5", "api_key_id": "key-1"}],
+        }
+
+    @classmethod
+    def _server(cls):
+        app = cls.App({"projects": [cls._project()], "relay": {"project_ids": ["claude-project"]}})
+        return RelayServer(app, "127.0.0.1", 0, error_logging_enabled=False, request_logging_enabled=False)
+
+    def test_budget_thinking_is_rewritten_to_adaptive(self):
+        body = {"model": "m", "thinking": {"type": "enabled", "budget_tokens": 2048, "display": "summarized"}}
+        normalized = _normalize_anthropic_thinking(body)
+        self.assertEqual(normalized["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(body["thinking"], {"type": "enabled", "budget_tokens": 2048, "display": "summarized"})
+
+    def test_disabled_thinking_is_dropped(self):
+        body = {"model": "m", "thinking": {"type": "disabled"}}
+        self.assertNotIn("thinking", _normalize_anthropic_thinking(body))
+        self.assertIn("thinking", body)
+
+    def test_supported_shapes_are_returned_untouched(self):
+        for body in ({"model": "m"}, {"thinking": {"type": "adaptive"}}, {"thinking": "enabled"}, {"thinking": None}):
+            with self.subTest(body=body):
+                self.assertIs(_normalize_anthropic_thinking(body), body)
+
+    def test_relay_retries_400_with_adaptive_thinking_and_remembers(self):
+        server = self._server()
+        sent = []
+
+        def fake_post(url, **kwargs):
+            body = kwargs["json"]
+            sent.append(body)
+            if (body.get("thinking") or {}).get("type") == "enabled":
+                return self.UpstreamJSON(
+                    False,
+                    400,
+                    {
+                        "type": "error",
+                        "error": {"type": "invalid_request_error", "message": "请求参数或能力可能不被支持"},
+                    },
+                )
+            return self.UpstreamJSON(
+                True,
+                200,
+                {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-opus-5-5",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 3, "output_tokens": 2},
+                },
+            )
+
+        payload = {
+            "model": "claude-opus-5-5",
+            "max_tokens": 2048,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "enabled", "budget_tokens": 1024, "display": "summarized"},
+        }
+        with patch("ai_probe.relay.requests.post", side_effect=fake_post):
+            server.start()
+            try:
+                status, _ = RelayErrorLoggingTests.post_json(server, "/v1/messages", payload)
+                self.assertEqual(status, 200)
+                self.assertEqual(len(sent), 2)
+                self.assertEqual(
+                    sent[0]["thinking"], {"type": "enabled", "budget_tokens": 1024, "display": "summarized"}
+                )
+                self.assertEqual(sent[1]["thinking"], {"type": "adaptive", "display": "summarized"})
+                self.assertNotIn("budget_tokens", sent[1]["thinking"])
+
+                # 记住该项目后，后续请求直接发自适应版本，不再浪费一次 400。
+                status, _ = RelayErrorLoggingTests.post_json(server, "/v1/messages", payload)
+                self.assertEqual(status, 200)
+                self.assertEqual(len(sent), 3)
+                self.assertEqual(sent[2]["thinking"], {"type": "adaptive", "display": "summarized"})
+            finally:
+                server.stop()
+
+    class UpstreamSSE:
+        def __init__(self, chunks):
+            self.ok = True
+            self.status_code = 200
+            self.headers = {"Content-Type": "text/event-stream"}
+            self.content = b"".join(chunks)
+            self.reason = "OK"
+
+        def iter_content(self, chunk_size=8192):
+            yield self.content
+
+        def iter_lines(self, chunk_size=1):
+            yield from self.content.splitlines()
+
+        def json(self):
+            raise ValueError("not json")
+
+        def close(self):
+            pass
+
+    def test_relay_repairs_thinking_for_converted_chat_request(self):
+        server = self._server()
+        sent = []
+        chunks = [
+            b'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"usage":{"input_tokens":3,"output_tokens":1}}}\n\n',
+            b'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+            b'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n',
+            b'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+            b'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n',
+            b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ]
+
+        def fake_post(url, **kwargs):
+            body = kwargs["json"]
+            sent.append(body)
+            if (body.get("thinking") or {}).get("type") == "enabled":
+                return self.UpstreamJSON(
+                    False,
+                    400,
+                    {
+                        "type": "error",
+                        "error": {"type": "invalid_request_error", "message": "请求参数或能力可能不被支持"},
+                    },
+                )
+            return self.UpstreamSSE(chunks)
+
+        payload = {
+            "model": "claude-opus-5-5",
+            "reasoning_effort": "high",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        with patch("ai_probe.relay.requests.post", side_effect=fake_post):
+            server.start()
+            try:
+                status, raw = RelayErrorLoggingTests.post_json(server, "/v1/chat/completions", payload)
+                self.assertEqual(status, 200)
+                self.assertEqual(len(sent), 2)
+                # chat 请求按 reasoning_effort 生成预算式 thinking，同样要降级成自适应再重试。
+                self.assertEqual(sent[0]["thinking"]["type"], "enabled")
+                self.assertEqual(sent[1]["thinking"], {"type": "adaptive"})
+                self.assertEqual(json.loads(raw)["choices"][0]["message"]["content"], "ok")
+            finally:
+                server.stop()
+
+    def test_relay_passes_400_through_when_repair_also_fails(self):
+        server = self._server()
+        sent = []
+
+        def fake_post(url, **kwargs):
+            sent.append(kwargs["json"])
+            return self.UpstreamJSON(False, 400, {"type": "error", "error": {"message": "请求参数或能力可能不被支持"}})
+
+        payload = {
+            "model": "claude-opus-5-5",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "enabled", "budget_tokens": 1024},
+        }
+        with patch("ai_probe.relay.requests.post", side_effect=fake_post):
+            server.start()
+            try:
+                status, _ = RelayErrorLoggingTests.post_json(server, "/v1/messages", payload)
+                self.assertEqual(status, 400)
+                # 只修一次，不会无限重试。
+                self.assertEqual(len(sent), 2)
+            finally:
+                server.stop()
+
+    def test_relay_does_not_touch_requests_without_budget_thinking(self):
+        server = self._server()
+        sent = []
+
+        def fake_post(url, **kwargs):
+            sent.append(kwargs["json"])
+            return self.UpstreamJSON(
+                True,
+                200,
+                {
+                    "id": "msg_2",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-opus-5-5",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            )
+
+        payload = {"model": "claude-opus-5-5", "max_tokens": 64, "messages": [{"role": "user", "content": "hi"}]}
+        with patch("ai_probe.relay.requests.post", side_effect=fake_post):
+            server.start()
+            try:
+                status, _ = RelayErrorLoggingTests.post_json(server, "/v1/messages", payload)
+                self.assertEqual(status, 200)
+                self.assertEqual(len(sent), 1)
+                self.assertNotIn("thinking", sent[0])
+            finally:
+                server.stop()
 
 
 if __name__ == "__main__":

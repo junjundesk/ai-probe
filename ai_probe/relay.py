@@ -12,13 +12,14 @@ import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 try:
     import requests
 except ImportError:
     requests = None
 
-from .client import OpenAIClient
+from .client import VERIFY_SSL, OpenAIClient
 from .config import RELAY_ERROR_LOG, RELAY_REQUEST_LOG
 from .projects import client_from_project
 from .protocols import (
@@ -27,6 +28,7 @@ from .protocols import (
     _convert_request,
     _custom_tool_names,
     _include_stream_usage,
+    _normalize_anthropic_thinking,
     _request_mode,
     _response_for_mode,
     _responses_custom_to_function,
@@ -43,6 +45,51 @@ _CALL_OUTPUT_TYPES = {
 
 _UPSTREAM_STREAM_ATTEMPTS = 3
 _UPSTREAM_STREAM_BACKOFF = (0.25, 0.5)
+
+# 上游 HTTP 错误原样透传：客户端据此判断是否需要重试，也让错误信息更准确。
+# 401 与本地中转自身的密钥校验语义冲突，仍然统一报 502。
+_UPSTREAM_ERROR_TYPES = {
+    400: "invalid_request_error",
+    403: "permission_error",
+    404: "not_found_error",
+    413: "request_too_large",
+    429: "rate_limit_error",
+    500: "api_error",
+    503: "overloaded_error",
+    529: "overloaded_error",
+}
+
+
+def _upstream_failure_status(status: int) -> int:
+    if 400 <= status < 600 and status != 401:
+        return status
+    return 502
+
+
+def _upstream_failure_type(status: int) -> str:
+    if status in _UPSTREAM_ERROR_TYPES:
+        return _UPSTREAM_ERROR_TYPES[status]
+    return "invalid_request_error" if 400 <= status < 500 else "api_error"
+
+
+def _upstream_exception_status(exc: Exception | None) -> int:
+    if exc is not None and requests is not None and isinstance(exc, requests.exceptions.Timeout):
+        return 504
+    return 502
+
+
+def _upstream_exception_message(exc: Exception, url: str = "") -> str:
+    """把连接层异常翻译成用户能直接照做的说明。"""
+    if requests is not None and isinstance(exc, requests.exceptions.SSLError):
+        host = urlsplit(url).hostname or "上游"
+        return f"上游 TLS 连接失败（{host}）：{exc}"
+    if requests is not None and isinstance(exc, requests.exceptions.Timeout):
+        return f"上游请求超时：{exc}"
+    if requests is not None and isinstance(exc, requests.exceptions.ConnectionError):
+        host = urlsplit(url).hostname or "上游"
+        return f"无法连接上游（{host}）：{exc}"
+    return str(exc) or type(exc).__name__
+
 
 # 调试模式下的完整报文捕获上限。
 DEBUG_CAPTURE_LIMIT = 256 * 1024
@@ -428,6 +475,8 @@ class RelayServer:
         self._rr = {}
         self._routes = None
         self._responses_function_only = set()
+        # 只认自适应思考的 Anthropic 上游：被 400 拒绝过一次就记住，下次直接改写。
+        self._anthropic_adaptive_thinking = set()
 
     def start(self):
         owner = self
@@ -599,13 +648,14 @@ class RelayServer:
                     route_count=len(routes),
                 )
                 last_error = ""
+                last_status = 0
+                last_exception = None
                 for project in owner.ordered_routes(model, routes):
                     attempt = {
                         "project_id": project.get("id"),
                         "project": project.get("name") or project.get("id") or "unknown",
                         "base_url": project.get("base_url"),
                         "proxy_enabled": bool(project.get("proxy_url")),
-                        "skip_ssl_verify": bool(project.get("skip_ssl_verify", False)),
                     }
                     attempts.append(attempt)
                     try:
@@ -640,6 +690,17 @@ class RelayServer:
                             upstream_body["stream"] = True
                         if upstream_body.get("stream"):
                             _include_stream_usage(upstream_body, client.api_mode)
+                        thinking_fallback = None
+                        if client.api_mode == "anthropic":
+                            repaired = _normalize_anthropic_thinking(upstream_body)
+                            if repaired is not upstream_body:
+                                with owner._lock:
+                                    known_adaptive = project.get("id") in owner._anthropic_adaptive_thinking
+                                if known_adaptive:
+                                    upstream_body = repaired
+                                    attempt["thinking_repair"] = True
+                                else:
+                                    thinking_fallback = repaired
                         path = owner.upstream_path(client.api_mode)
                         if not mode_converted and "?" in self.path:
                             path += "?" + self.path.split("?", 1)[1]
@@ -670,6 +731,27 @@ class RelayServer:
                             upstream_status=response.status_code,
                             upstream_trace=owner._trace_headers(response.headers),
                         )
+                        if thinking_fallback is not None and response.status_code in {400, 422}:
+                            # 上游拒绝了预算式 thinking：记下这个项目，换自适应写法再发一次。
+                            thinking_retry = attempt.setdefault("thinking_retry", {})
+                            thinking_retry["upstream_error"] = error_message_from_response(response)
+                            response.close()
+                            with owner._lock:
+                                owner._anthropic_adaptive_thinking.add(project.get("id"))
+                            if owner.request_debug_capture:
+                                thinking_retry["upstream_request"] = owner._debug_body(
+                                    json.dumps(thinking_fallback, ensure_ascii=False).encode("utf-8")
+                                )
+                            response = owner._post_upstream(
+                                f"{client.base_url}{path}",
+                                headers=upstream_headers,
+                                body=thinking_fallback,
+                                client=client,
+                            )
+                            attempt.update(
+                                upstream_status=response.status_code,
+                                upstream_trace=owner._trace_headers(response.headers),
+                            )
                         if response.ok:
                             try:
                                 owner.write_upstream(
@@ -785,16 +867,25 @@ class RelayServer:
                             error_text = error_message_from_response(response)
                             compatibility_retry["upstream_error"] = error_text
                             response.close()
+                        last_status = response.status_code
                         last_error = f"HTTP {response.status_code}: {error_text}"
                     except Exception as exc:
-                        last_error = str(exc)
+                        last_status = 0
+                        last_exception = exc
+                        last_error = _upstream_exception_message(exc, attempt.get("upstream_url") or "")
                         attempt.update(
                             exception_type=type(exc).__name__,
                             exception=str(exc),
                         )
+                if last_status:
+                    failure_status = _upstream_failure_status(last_status)
+                    failure_type = _upstream_failure_type(failure_status)
+                else:
+                    failure_status = _upstream_exception_status(last_exception)
+                    failure_type = "upstream_timeout" if failure_status == 504 else "upstream_error"
                 owner.log_request(
                     self,
-                    502,
+                    failure_status,
                     model=model,
                     incoming_mode=incoming_mode,
                     requested_stream=requested_stream,
@@ -802,7 +893,7 @@ class RelayServer:
                     attempts=attempts,
                     error=last_error or "所有上游接口均不可用",
                 )
-                self._error(502, last_error or "所有上游接口均不可用", "upstream_error")
+                self._error(failure_status, last_error or "所有上游接口均不可用", failure_type)
 
         try:
             RELAY_ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -856,11 +947,14 @@ class RelayServer:
                     json=body,
                     timeout=(15, 300),
                     proxies=client.proxies,
-                    verify=client.verify_ssl,
+                    verify=VERIFY_SSL,
                     stream=stream,
                 )
             except Exception as exc:
                 last_exc = exc
+                # 证书校验失败重试也必然失败，只会把多次 TLS 握手耗时叠加给用户。
+                if requests is not None and isinstance(exc, requests.exceptions.SSLError):
+                    raise
                 if attempt + 1 >= _UPSTREAM_STREAM_ATTEMPTS:
                     raise
                 time.sleep(_UPSTREAM_STREAM_BACKOFF[min(attempt, len(_UPSTREAM_STREAM_BACKOFF) - 1)])
