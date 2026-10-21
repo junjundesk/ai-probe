@@ -24,6 +24,26 @@ from ai_probe.protocols import (
 )
 from ai_probe.relay import RelayServer, _prepare_responses_upstream_body
 
+
+def _read_log_text(path: Path, timeout: float = 3.0) -> str:
+    """等待中转后台线程把日志写完整再读。
+
+    ThreadingHTTPServer 的 handler 是守护线程，server.stop() 不会等它退出，
+    请求返回后立刻读日志偶尔会遇到「文件还没建」或半行 JSON。
+    """
+    deadline = time.time() + timeout
+    last_text = ""
+    while time.time() < deadline:
+        try:
+            last_text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            last_text = ""
+        if last_text.strip() and last_text.endswith("\n"):
+            return last_text
+        time.sleep(0.02)
+    raise AssertionError(f"日志未写入完成：{path}\n{last_text!r}")
+
+
 _LOG_DIR = tempfile.TemporaryDirectory()
 _LOG_PATCHERS = (
     patch("ai_probe.relay.RELAY_ERROR_LOG", Path(_LOG_DIR.name) / "relay-errors.jsonl"),
@@ -805,7 +825,7 @@ class RelayErrorLoggingTests(unittest.TestCase):
                     ),
                     404,
                 )
-                entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+                entry = json.loads(_read_log_text(log_path).strip())
                 self.assertEqual(entry["status"], 404)
                 self.assertEqual(entry["path"], "/v1/responses")
                 self.assertEqual(entry["request"]["model"], "missing-model")
@@ -835,7 +855,7 @@ class RelayErrorLoggingTests(unittest.TestCase):
             finally:
                 server.stop()
 
-            entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+            entry = json.loads(_read_log_text(log_path).strip())
             self.assertEqual(entry["status"], 400)
 
     def test_relay_passes_through_upstream_status(self):
@@ -902,7 +922,7 @@ class RelayErrorLoggingTests(unittest.TestCase):
                 ["function_call", "function_call_output", "message"],
             )
             self.assertEqual(upstream_input[-1]["content"][0]["text"], "done")
-            entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+            entry = json.loads(_read_log_text(log_path).strip())
             self.assertEqual(entry["status"], 404)
             self.assertEqual(entry["attempts"][0]["upstream_status"], 404)
             self.assertEqual(entry["attempts"][0]["upstream_error"], "upstream missing")
@@ -1185,10 +1205,7 @@ class RelayErrorLoggingTests(unittest.TestCase):
                 server.stop()
 
             self.assertFalse(error_log_path.exists())
-            deadline = time.time() + 2
-            while not request_log_path.exists() and time.time() < deadline:
-                time.sleep(0.02)
-            entry = json.loads(request_log_path.read_text(encoding="utf-8").strip())
+            entry = json.loads(_read_log_text(request_log_path).strip())
 
         self.assertEqual(status, 200)
         self.assertFalse(error_log_path.exists())
@@ -1227,8 +1244,8 @@ class RelayErrorLoggingTests(unittest.TestCase):
             finally:
                 server.stop()
 
-            entries = [json.loads(line) for line in request_log_path.read_text(encoding="utf-8").splitlines()]
-            error_entries = [json.loads(line) for line in error_log_path.read_text(encoding="utf-8").splitlines()]
+            entries = [json.loads(line) for line in _read_log_text(request_log_path).splitlines()]
+            error_entries = [json.loads(line) for line in _read_log_text(error_log_path).splitlines()]
 
         self.assertEqual(request_log_path.parent, error_log_path.parent)
         self.assertEqual(len(entries), 2)
@@ -1344,7 +1361,7 @@ class RelayErrorLoggingTests(unittest.TestCase):
             finally:
                 server.stop()
 
-            entry = json.loads(request_log_path.read_text(encoding="utf-8").strip())
+            entry = json.loads(_read_log_text(request_log_path).strip())
 
         self.assertEqual(status, 200)
         # 入站请求体完整保留（含中文正文）
@@ -1412,7 +1429,7 @@ class RelayErrorLoggingTests(unittest.TestCase):
             finally:
                 server.stop()
 
-            entry = json.loads(request_log_path.read_text(encoding="utf-8").strip())
+            entry = json.loads(_read_log_text(request_log_path).strip())
 
         self.assertEqual(status, 200)
         body = entry["debug_response_body"]
@@ -1433,10 +1450,8 @@ class RelayErrorLoggingTests(unittest.TestCase):
                 self.post(server, {"model": "missing-model", "input": "hi"})
             finally:
                 server.stop()
-            log_text = ""
             request_log_path = server._current_request_log_path()
-            if request_log_path.exists():
-                log_text = request_log_path.read_text(encoding="utf-8")
+            log_text = _read_log_text(request_log_path)
 
         self.assertNotIn("debug_incoming_body", log_text)
         self.assertNotIn("debug_response_body", log_text)
