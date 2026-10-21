@@ -1,3 +1,4 @@
+import gc
 import json
 import os
 import tempfile
@@ -13,7 +14,7 @@ from ai_probe.store_service import StoreService, default_store, normalize_store
 # PySide6 依赖 Qt 的系统库（libEGL 等），精简容器与部分 Linux 环境里没有。
 # 缺失时只跳过 Qt 界面测试，配置存储测试仍然照跑。
 try:
-    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtCore import QEvent, QPoint, Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import (
         QAbstractItemView,
@@ -34,6 +35,28 @@ except ImportError as exc:  # pragma: no cover - 取决于运行环境
     QT_AVAILABLE = False
     QT_SKIP_REASON = f"PySide6 不可用：{exc}"
     _QT_APP = None
+
+
+def tearDownModule():
+    """销毁 QApplication，避免 Linux/offscreen 下解释器退出时 Qt 析构段错误。
+
+    CI 里 138 个测试全部通过后进程仍以 139 退出，原因就是模块级 QApplication
+    一直活到解释器收尾、Qt 库先被卸载。必须在测试模块结束时主动销毁。
+    """
+    global _QT_APP
+    if _QT_APP is None:
+        return
+    for widget in list(_QT_APP.topLevelWidgets()):
+        widget.close()
+        widget.deleteLater()
+    _QT_APP.sendPostedEvents(None, QEvent.DeferredDelete)
+    _QT_APP.processEvents()
+    _QT_APP.quit()
+    _QT_APP.deleteLater()
+    _QT_APP.sendPostedEvents(None, QEvent.DeferredDelete)
+    _QT_APP.processEvents()
+    _QT_APP = None
+    gc.collect()
 
 
 class StoreNormalizationTests(unittest.TestCase):
