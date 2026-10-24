@@ -2,6 +2,12 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Fixed
+
+- 本地中转在协议转换（如 chat → anthropic）时不再把调用方的 User-Agent 换成 `requests` 自带的 `python-requests/x.y.z`：中转与项目都没配置 UA 时原样转发入站 UA，显式配置（中转上游 User-Agent / 项目自定义请求头）仍然优先。
+
 ## [1.2.0] - 2026-10-21
 
 ### Fixed

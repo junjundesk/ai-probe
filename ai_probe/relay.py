@@ -1303,6 +1303,22 @@ class RelayServer:
         return "/chat/completions"
 
     @staticmethod
+    def incoming_user_agent(incoming_headers) -> str:
+        """取出入站请求的 User-Agent，供本地未配置 UA 时原样转发。"""
+        if not incoming_headers:
+            return ""
+        for name, value in incoming_headers.items():
+            if str(name).strip().lower() == "user-agent":
+                return str(value or "").strip()
+        return ""
+
+    @staticmethod
+    def has_user_agent(headers) -> bool:
+        return any(
+            str(name).strip().lower() == "user-agent" and str(value or "").strip() for name, value in headers.items()
+        )
+
+    @staticmethod
     def upstream_headers(
         client: OpenAIClient, incoming_headers, passthrough: bool, user_agent: str = ""
     ) -> dict[str, str]:
@@ -1337,6 +1353,12 @@ class RelayServer:
                 if name.lower() == "user-agent":
                     del headers[name]
             headers["User-Agent"] = normalized_user_agent
+        elif not RelayServer.has_user_agent(headers):
+            # 中转与项目都没配置 UA：原样转发入站 UA。协议转换不复制入站请求头，
+            # 这里必须单独补齐，否则 requests 会自己生成 python-requests/x.y.z。
+            incoming_user_agent = RelayServer.incoming_user_agent(incoming_headers)
+            if incoming_user_agent:
+                headers["User-Agent"] = incoming_user_agent
         return headers
 
     @staticmethod

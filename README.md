@@ -58,7 +58,7 @@ docker run -d --name ai-probe \
 | `AI_PROBE_RELAY_HOST` | 监听地址，镜像内默认 `0.0.0.0` |
 | `AI_PROBE_RELAY_PORT` | 监听端口，默认 `8040` |
 | `AI_PROBE_RELAY_KEY` | 客户端访问密钥，留空表示不校验 |
-| `AI_PROBE_RELAY_USER_AGENT` | 覆盖转发到上游的 User-Agent |
+| `AI_PROBE_RELAY_USER_AGENT` | 覆盖转发到上游的 User-Agent；留空时原样转发调用方的 User-Agent |
 | `AI_PROBE_LOG_LEVEL` | 日志级别，默认 `INFO` |
 
 这些变量只作用于运行期，不会写回加密配置，因此数据目录可以只读挂载。

@@ -145,6 +145,49 @@ class RelayPromptTests(unittest.TestCase):
             finally:
                 server.stop()
 
+    def test_http_forwarding_keeps_caller_user_agent_when_unset(self):
+        """端到端：本机与项目都没配 UA 时，转换后的上游请求必须沿用调用方 UA。"""
+        project = {"id": "test", "name": "test", "models": [{"id": "model"}]}
+        app = SimpleNamespace(
+            store={"projects": [project], "relay": {"project_ids": ["test"]}},
+            _post=lambda *args: None,
+            _log=lambda *args: None,
+        )
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=False, request_logging_enabled=False)
+        # 项目是 anthropic 上游，调用方发 chat 请求 => 走协议转换路径。
+        client = SimpleNamespace(
+            api_mode="anthropic",
+            headers={"x-api-key": "sk-upstream"},
+            custom_headers={"x-api-key": "sk-upstream"},
+            base_url="https://example.test/v1",
+            proxies={},
+        )
+        response = Mock(ok=False, status_code=400, text='{"error":{"message":"test response"}}', headers={})
+        response.json.return_value = {"error": {"message": "test response"}}
+        payload = {"model": "model", "messages": [{"role": "user", "content": "hi"}]}
+        caller_headers = {"Content-Type": "application/json", "User-Agent": "claude-cli/2.1.0 (external, cli)"}
+        with (
+            patch("ai_probe.relay.client_from_project", return_value=client),
+            patch("ai_probe.relay.requests.post", return_value=response) as post,
+        ):
+            server.start()
+            try:
+                connection = HTTPConnection("127.0.0.1", server.port, timeout=3)
+                try:
+                    connection.request("POST", "/v1/chat/completions", json.dumps(payload), caller_headers)
+                    result = connection.getresponse()
+                    result.read()
+                    self.assertEqual(result.status, 400)
+                finally:
+                    connection.close()
+                sent = post.call_args.kwargs["headers"]
+                self.assertEqual(sent["User-Agent"], caller_headers["User-Agent"])
+                self.assertEqual(sum(name.lower() == "user-agent" for name in sent), 1)
+                # 协议转换仍然只转发 UA，不把入站 Content-Type 之类的头带过去覆盖上游。
+                self.assertEqual(sent["x-api-key"], "sk-upstream")
+            finally:
+                server.stop()
+
     def test_legacy_defaults_and_saved_config(self):
         relay = normalize_store({"projects": []})["relay"]
         self.assertEqual(relay["system_prompt"], "")
@@ -212,3 +255,44 @@ class RelayPromptTests(unittest.TestCase):
             )["User-Agent"],
             "caller-agent",
         )
+
+    def test_converted_requests_forward_incoming_user_agent(self):
+        """协议转换不复制入站请求头，但 UA 必须原样转发，不能换成 requests 的默认值。"""
+        blank_client = SimpleNamespace(headers={}, custom_headers={})
+        for passthrough in (True, False):
+            with self.subTest(passthrough=passthrough):
+                headers = RelayServer.upstream_headers(
+                    blank_client, {"User-Agent": "claude-cli/2.1.0", "X-Incoming": "yes"}, passthrough
+                )
+                self.assertEqual(headers["User-Agent"], "claude-cli/2.1.0")
+                self.assertEqual(sum(name.lower() == "user-agent" for name in headers), 1)
+                self.assertEqual("X-Incoming" in headers, passthrough)
+
+    def test_converted_requests_keep_project_and_relay_user_agent_precedence(self):
+        project_client = SimpleNamespace(headers={}, custom_headers={"User-Agent": "project-agent"})
+        project_client.headers = {"User-Agent": "project-agent"}
+        self.assertEqual(
+            RelayServer.upstream_headers(project_client, {"User-Agent": "caller-agent"}, False)["User-Agent"],
+            "project-agent",
+        )
+        self.assertEqual(
+            RelayServer.upstream_headers(
+                SimpleNamespace(headers={}, custom_headers={}), {"User-Agent": "caller-agent"}, False, "relay-agent"
+            )["User-Agent"],
+            "relay-agent",
+        )
+
+    def test_blank_project_user_agent_placeholder_does_not_block_incoming(self):
+        # UI 的「添加 User-Agent」会写入空值占位，它不构成配置，应继续透传入站 UA。
+        client = SimpleNamespace(headers={}, custom_headers={"User-Agent": ""})
+        self.assertEqual(
+            RelayServer.upstream_headers(client, {"User-Agent": "caller-agent"}, False)["User-Agent"],
+            "caller-agent",
+        )
+
+    def test_missing_incoming_user_agent_leaves_header_absent(self):
+        headers = RelayServer.upstream_headers(SimpleNamespace(headers={}, custom_headers={}), {}, False)
+        self.assertFalse(RelayServer.has_user_agent(headers))
+        self.assertEqual(RelayServer.incoming_user_agent({"User-Agent": "  caller  "}), "caller")
+        self.assertEqual(RelayServer.incoming_user_agent({"user-agent": "lower"}), "lower")
+        self.assertEqual(RelayServer.incoming_user_agent({}), "")
