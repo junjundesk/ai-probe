@@ -4,6 +4,9 @@
 按钮挤出屏幕；QLabel 不换行还会把最小宽度顶到 ~660px。这里在独立子进程里
 用真实 UI 验证：窗口收敛到可用区域、说明文字换行、输入框/表格可滚动、按钮
 可见可点，以及取消/保存路径只写临时配置。
+
+子进程以 DIALOG_COMPAT_OK 作为「断言已全部通过」的哨兵：Qt 退出阶段在部分
+环境会崩溃，因此判定以哨兵为准，不看退出码。
 """
 
 import os
@@ -299,9 +302,17 @@ window.close()
 settle(app)
 print("DIALOG_COMPAT_OK")
 # 某些 Linux/Windows 环境会在解释器销毁 QApplication 时崩溃，
-# 断言已全部通过，这里刷新输出后直接结束进程。
+# 断言已全部通过，这里刷新输出后跳过 Qt 卸载阶段直接结束进程。
 sys.stdout.flush()
 sys.stderr.flush()
+if sys.platform == "win32":
+    try:
+        import ctypes
+
+        _kernel32 = ctypes.windll.kernel32
+        _kernel32.TerminateProcess(_kernel32.GetCurrentProcess(), 0)
+    except Exception:
+        pass
 os._exit(0)
 """
 
@@ -334,12 +345,13 @@ class DialogScreenCompatibilityTests(unittest.TestCase):
             default_dir = Path(safety_dir)
             self.assertFalse((default_dir / "ai_probe_projects.json").exists(), "测试不应写入默认配置路径")
             self.assertFalse((default_dir / "ai_probe_usage.json").exists(), "测试不应写入默认用量文件")
-        self.assertEqual(
-            completed.returncode,
-            0,
-            f"子进程失败（{scenario}）：\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
+        # 成功标记代表对话框断言已全部通过；Qt 卸载阶段的崩溃不算失败。
+        self.assertIn(
+            "DIALOG_COMPAT_OK",
+            completed.stdout,
+            f"子进程失败（{scenario}，exit {completed.returncode}）：\n"
+            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
         )
-        self.assertIn("DIALOG_COMPAT_OK", completed.stdout)
 
     def test_small_screen_dialogs_stay_reachable(self):
         self._run_scenario("small")

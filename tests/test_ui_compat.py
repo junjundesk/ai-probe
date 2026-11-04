@@ -2,6 +2,10 @@
 
 Qt 测试必须放在独立进程里：tests/test_qt_app.py 的 tearDownModule 会主动销毁
 QApplication，同进程再创建窗口容易踩到 Qt 生命周期问题。
+
+子进程以 UI_COMPAT_OK 作为「断言已全部通过」的哨兵：Qt 在退出阶段可能崩溃
+（Linux offscreen 段错误、Windows 高缩放 0xC0000005），所以判定以哨兵为准，
+不看退出码。
 """
 
 import os
@@ -63,6 +67,16 @@ def finish(message="UI_COMPAT_OK"):
     print(message)
     sys.stdout.flush()
     sys.stderr.flush()
+    # Windows 高缩放环境卸载 Qt DLL 时偶发 0xC0000005 访问冲突；场景断言此时已全部
+    # 通过，用 TerminateProcess 跳过卸载阶段，再用 os._exit 兜底。
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            kernel32.TerminateProcess(kernel32.GetCurrentProcess(), 0)
+        except Exception:
+            pass
     os._exit(0)
 
 
@@ -504,13 +518,15 @@ class UiCompatibilityTests(unittest.TestCase):
             errors="replace",
             timeout=180,
         )
-        if result.returncode != 0:
-            self.fail(
-                f"Qt 子进程场景 {scenario!r} 失败（exit {result.returncode}）\n"
-                f"stdout:\n{result.stdout}\n"
-                f"stderr:\n{result.stderr}"
-            )
-        self.assertIn("UI_COMPAT_OK", result.stdout)
+        # 成功标记代表场景里的断言已全部跑到并通过；Qt 在部分环境卸载 DLL 时会
+        # 崩溃（Linux offscreen 段错误、Windows 高缩放 0xC0000005），不能据此判定失败。
+        self.assertIn(
+            "UI_COMPAT_OK",
+            result.stdout,
+            f"Qt 子进程场景 {scenario!r} 失败（exit {result.returncode}）\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}",
+        )
 
     def test_entry_initializes_theme_before_password(self):
         self.run_scenario("entry")
