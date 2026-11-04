@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QScrollArea,
     QSplitter,
     QStackedWidget,
     QStatusBar,
@@ -52,7 +51,9 @@ from PySide6.QtWidgets import (
 
 from .client import OpenAIClient
 from .config import DATA_FILE, MAX_LOG_LINES, MAX_WORKERS, PROBE_TIMEOUT, RELAY_ERROR_LOG, USAGE_FILE
-from .projects import _project_keys, _sync_project_keys, api_key_label, new_project, project_key_for_model
+from .masking import ScreenshotMasker
+from .projects import _project_keys, _sync_project_keys, new_project, project_key_for_model
+from .qt_compat import apply_light_theme, apply_window_style, fit_window_to_screen, scrollable
 from .relay import RelayServer
 from .store_service import StoreService
 from .usage import UsageStats
@@ -81,6 +82,11 @@ _SKIP_PROBE_KEYWORDS = (
     "embed",
     "rerank",
 )
+
+_MAIN_WINDOW_PREFERRED_SIZE = (1500, 940)
+_MAIN_WINDOW_MINIMUM_SIZE = (1120, 720)
+_RELAY_WINDOW_PREFERRED_SIZE = (900, 700)
+_RELAY_WINDOW_MINIMUM_SIZE = (640, 480)
 
 
 class WorkerSignals(QObject):
@@ -132,11 +138,11 @@ class QtRelayDialog(QDialog):
     def __init__(self, app):
         # 原生父窗口最小化会连带隐藏中转窗口，因此只保留控制器引用，不设置窗口父级。
         super().__init__(None, Qt.Window)
+        apply_light_theme()
+        apply_window_style(self)
         self.app = app
         self.setAttribute(Qt.WA_QuitOnClose, False)
-        self.setStyleSheet(app.styleSheet())
         self.setWindowTitle("订阅与本地中转")
-        self.resize(900, 700)
         self.setModal(False)
         self.tabs = QTabWidget()
         self.config_tab = self._build_config_tab()
@@ -151,6 +157,7 @@ class QtRelayDialog(QDialog):
         self.refresh_timer.timeout.connect(self.refresh_stats)
         self.refresh_timer.start(1200)
         self.refresh_stats()
+        fit_window_to_screen(self, _RELAY_WINDOW_PREFERRED_SIZE, _RELAY_WINDOW_MINIMUM_SIZE)
 
     def _build_config_tab(self):
         widget = QWidget()
@@ -224,7 +231,7 @@ class QtRelayDialog(QDialog):
             field.stateChanged.connect(self.save_settings)
         self.refresh_projects()
         self.update_controls()
-        return widget
+        return scrollable(widget, "relayConfigScroll")
 
     def _build_prompt_tab(self):
         widget = QWidget()
@@ -307,13 +314,17 @@ class QtRelayDialog(QDialog):
         projects.sort(key=lambda project: (project.get("id") not in enabled, str(project.get("name", "")).casefold()))
         self.projects.blockSignals(True)
         self.projects.clear()
+        # 打码模式下只显示别名；真实名称仍留在 item data 里，供搜索与勾选回写使用。
+        self.app._rebuild_masker()
         for project in projects:
+            label = self.app.masker.project_label(project)
             item = QListWidgetItem(
-                f"{project.get('name', '未命名项目')} · {len(_project_keys(project))} 个密钥 · "
+                f"{label} · {len(_project_keys(project))} 个密钥 · "
                 f"{len(project.get('models', []))} 个模型 · {project.get('api_mode', 'chat')}"
             )
             item.setData(Qt.UserRole, project["id"])
             item.setData(Qt.UserRole + 1, str(project.get("name", "")))
+            item.setData(Qt.UserRole + 2, label)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked if project["id"] in enabled else Qt.Unchecked)
             self.projects.addItem(item)
@@ -326,7 +337,8 @@ class QtRelayDialog(QDialog):
         for index in range(self.projects.count()):
             item = self.projects.item(index)
             name = str(item.data(Qt.UserRole + 1) or "").casefold()
-            item.setHidden(bool(query) and query not in name)
+            label = str(item.data(Qt.UserRole + 2) or "").casefold()
+            item.setHidden(bool(query) and query not in name and query not in label)
 
     def _project_changed(self, item, *_):
         relay = self.app.store.setdefault("relay", {})
@@ -408,7 +420,7 @@ class QtRelayDialog(QDialog):
             cache_color = self._cache_rate_color(in_count, cached_count)
             values = [
                 str(index + 1),
-                f"{row.get('project_name', '')}-{row.get('model', '')}",
+                f"{self.app.masker.mask(row.get('project_name', ''))}-{row.get('model', '')}",
                 str(row.get("requests", 0)),
                 f"{in_count:,}",
                 f"{out_count:,}",
@@ -440,10 +452,17 @@ class QtMainWindow(QMainWindow):
 
     def __init__(self, config_key: bytes, data_file: Path = DATA_FILE, usage_file: Path = USAGE_FILE):
         super().__init__()
+        apply_light_theme()
         self.config_key = config_key
         self.store_service = StoreService(config_key, data_file)
         self.store = self.store_service.load()
         self.current_id = self.store.get("selected_project_id")
+        # 截图模式：项目名与密钥一律走 masker，界面只显示打码结果。
+        self.screenshot_mode = bool(self.store.get("ui", {}).get("screenshot_mode"))
+        self.masker = ScreenshotMasker(self.screenshot_mode)
+        self.masker.rebuild(self.store["projects"])
+        # 原始日志留着，切换截图模式后按最新状态重新打码渲染。
+        self._log_lines: list[str] = []
         self.usage_stats = UsageStats(usage_file)
         self.relay_server = None
         self.relay_dialog = None
@@ -471,9 +490,8 @@ class QtMainWindow(QMainWindow):
             self._load_store_timer.start(0)
 
     def _build_window(self):
-        self.setWindowTitle("AI Probe · 多项目测活与本地中转")
-        self.resize(1500, 940)
-        self.setMinimumSize(1120, 720)
+        self.setWindowTitle(self._window_title())
+        apply_window_style(self)
         toolbar = QToolBar("工具")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
@@ -490,6 +508,16 @@ class QtMainWindow(QMainWindow):
             action = QAction(text, self)
             action.triggered.connect(callback)
             toolbar.addAction(action)
+        toolbar.addSeparator()
+        # 截图模式只改界面显示，存储里的真实名称与密钥保持原样。
+        self.screenshot_action = QAction("截图模式", self)
+        self.screenshot_action.setCheckable(True)
+        self.screenshot_action.setChecked(self.screenshot_mode)
+        self.screenshot_action.setToolTip("打码项目名称与密钥，便于截图分享（Ctrl+Shift+M）")
+        self.screenshot_action.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        self.screenshot_action.setShortcutContext(Qt.ApplicationShortcut)
+        self.screenshot_action.toggled.connect(self.set_screenshot_mode)
+        toolbar.addAction(self.screenshot_action)
         central = QWidget()
         root = QVBoxLayout(central)
         root.setContentsMargins(8, 8, 8, 8)
@@ -502,18 +530,18 @@ class QtMainWindow(QMainWindow):
         self.status_label = QLabel("就绪")
         self.status_label.setObjectName("statusLabel")
         root.addWidget(self.status_label)
-        self.setCentralWidget(central)
+        # At very narrow logical widths the horizontal workspace is wider than
+        # the screen; the outer scroll area keeps every control reachable.
+        self.setCentralWidget(scrollable(central, "mainScroll"))
         status = QStatusBar()
         self.setStatusBar(status)
         self.statusBar().showMessage("就绪")
-        self.setStyleSheet(
-            "QMainWindow { background: #f7f9fc; } QGroupBox { font-weight: 600; margin-top: 8px; } "
-            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; } "
-            "QToolBar { spacing: 6px; padding: 5px; } QListWidget, QTreeWidget, QPlainTextEdit { background: white; }"
-        )
+        fit_window_to_screen(self, _MAIN_WINDOW_PREFERRED_SIZE, _MAIN_WINDOW_MINIMUM_SIZE)
+        self._sync_screenshot_controls()
 
     def _build_project_sidebar(self):
         widget = QWidget()
+        widget.setMinimumWidth(220)
         layout = QVBoxLayout(widget)
         title = QLabel("项目")
         title.setFont(QFont("Microsoft YaHei UI", 14, QFont.Bold))
@@ -542,8 +570,6 @@ class QtMainWindow(QMainWindow):
         return widget
 
     def _build_workspace(self):
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._build_project_form())
@@ -556,8 +582,9 @@ class QtMainWindow(QMainWindow):
         self.log_text.setMinimumHeight(110)
         log_layout.addWidget(self.log_text)
         layout.addWidget(log_box)
-        scroll.setWidget(container)
-        return scroll
+        workspace = scrollable(container, "workspaceScroll")
+        workspace.setMinimumWidth(360)
+        return workspace
 
     def _build_project_form(self):
         box = QGroupBox("项目配置")
@@ -579,17 +606,17 @@ class QtMainWindow(QMainWindow):
         form.addRow("API 模式", self.api_mode)
         root.addLayout(form)
         buttons = QHBoxLayout()
-        show_key = QPushButton("显示密钥")
-        keys = QPushButton("管理密钥")
+        self.show_key_button = QPushButton("显示密钥")
+        self.keys_button = QPushButton("管理密钥")
         advanced = QPushButton("高级设置")
-        show_key.setCheckable(True)
-        show_key.toggled.connect(
+        self.show_key_button.setCheckable(True)
+        self.show_key_button.toggled.connect(
             lambda checked: self.api_key.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
         )
-        keys.clicked.connect(self.manage_api_keys)
+        self.keys_button.clicked.connect(self.manage_api_keys)
         advanced.clicked.connect(self.toggle_advanced)
-        buttons.addWidget(show_key)
-        buttons.addWidget(keys)
+        buttons.addWidget(self.show_key_button)
+        buttons.addWidget(self.keys_button)
         buttons.addWidget(advanced)
         buttons.addStretch()
         root.addLayout(buttons)
@@ -715,6 +742,10 @@ class QtMainWindow(QMainWindow):
         light = menu.addAction("轻量模式")
         light.setCheckable(True)
         light.toggled.connect(self.switch_lightweight)
+        self.tray_screenshot_action = menu.addAction("截图模式")
+        self.tray_screenshot_action.setCheckable(True)
+        self.tray_screenshot_action.setChecked(self.screenshot_mode)
+        self.tray_screenshot_action.toggled.connect(self.set_screenshot_mode)
         quit_action = menu.addAction("退出")
         quit_action.triggered.connect(self.close)
         self.tray.setContextMenu(menu)
@@ -739,6 +770,69 @@ class QtMainWindow(QMainWindow):
         painter.end()
         return QIcon(pixmap)
 
+    def _window_title(self):
+        base = "AI Probe · 多项目测活与本地中转"
+        return f"{base}（截图模式：名称与密钥已打码）" if self.screenshot_mode else base
+
+    def _rebuild_masker(self):
+        self.masker.rebuild(self.store.get("projects", []))
+
+    def set_screenshot_mode(self, enabled, persist=True):
+        """切换截图模式：界面立即重绘，真实名称与密钥不再出现在任何控件里。"""
+        enabled = bool(enabled)
+        if enabled == self.screenshot_mode:
+            self._sync_screenshot_controls()
+            return
+        # 先把表单里还没落盘的编辑提交掉，再重绘界面，避免这次修改被覆盖。
+        self._flush_form_save()
+        self.screenshot_mode = enabled
+        self.masker.enabled = enabled
+        self._rebuild_masker()
+        self._sync_screenshot_controls()
+        self.refresh_project_list()
+        self._load_current_project()
+        self._render_log()
+        self._sync_relay_dialog()
+        self.store.setdefault("ui", {})["screenshot_mode"] = enabled
+        if persist:
+            self._save_store()
+        self.set_status(
+            "截图模式已开启：项目名称与密钥已打码，可放心截图"
+            if enabled
+            else "截图模式已关闭：恢复显示真实项目名称与密钥"
+        )
+
+    def _sync_screenshot_controls(self):
+        """把打码状态同步到标题、开关与密钥相关控件。"""
+        for action in (getattr(self, "screenshot_action", None), getattr(self, "tray_screenshot_action", None)):
+            if action is None:
+                continue
+            action.blockSignals(True)
+            action.setChecked(self.screenshot_mode)
+            action.blockSignals(False)
+        self.setWindowTitle(self._window_title())
+        if not hasattr(self, "show_key_button"):
+            return
+        # 密钥一律以密码态显示；打码时连“显示密钥/管理密钥”一起锁掉，避免绕过打码看到原文。
+        self.show_key_button.setChecked(False)
+        self.show_key_button.setEnabled(not self.screenshot_mode)
+        self.show_key_button.setToolTip("截图模式下不可显示密钥" if self.screenshot_mode else "")
+        self.keys_button.setEnabled(not self.screenshot_mode)
+        self.keys_button.setToolTip("截图模式下不可管理密钥" if self.screenshot_mode else "")
+        self.project_name.setReadOnly(self.screenshot_mode)
+        self.project_name.setToolTip(
+            "截图模式下项目名称已打码，关闭后（Ctrl+Shift+M）可编辑" if self.screenshot_mode else ""
+        )
+
+    def _refuse_in_screenshot_mode(self, action):
+        """打码状态下拒绝需要读到真实名称/密钥的操作，避免误改被打码的值。"""
+        self.set_status(f"截图模式下不能{action}，请先按 Ctrl+Shift+M 关闭截图模式")
+        QMessageBox.information(
+            self,
+            "截图模式",
+            f"截图模式下不能{action}。\n名称与密钥处于打码状态，关闭截图模式（Ctrl+Shift+M）后即可继续。",
+        )
+
     def _ensure_selection(self):
         ids = {project["id"] for project in self.store["projects"]}
         if self.current_id not in ids:
@@ -751,12 +845,16 @@ class QtMainWindow(QMainWindow):
 
     def refresh_project_list(self):
         query = self.project_search.text().strip().casefold()
+        # 名称可能刚被改过，先按最新项目顺序重建别名，保证列表与打码结果一致。
+        self._rebuild_masker()
         self.project_list.blockSignals(True)
         self.project_list.clear()
         for project in self.store["projects"]:
-            if query and query not in str(project.get("name", "")).casefold():
+            label = self.masker.project_label(project)
+            real_name = str(project.get("name", "")).casefold()
+            if query and query not in real_name and query not in label.casefold():
                 continue
-            item = QListWidgetItem(str(project.get("name", "未命名项目")))
+            item = QListWidgetItem(label)
             item.setData(Qt.UserRole, project["id"])
             self.project_list.addItem(item)
         self._highlight_current_project()
@@ -805,7 +903,7 @@ class QtMainWindow(QMainWindow):
         if not project:
             return
         self.loading_form = True
-        self.project_name.setText(str(project.get("name", "")))
+        self.project_name.setText(self.masker.project_label(project))
         self.base_url.setText(str(project.get("base_url", "")))
         self.api_key.setText(str(project.get("api_key", "")))
         self.proxy_url.setText(str(project.get("proxy_url", "")))
@@ -914,11 +1012,15 @@ class QtMainWindow(QMainWindow):
         project = self.project()
         if not project:
             return
-        name = self.project_name.text().strip() or "未命名项目"
+        if self.screenshot_mode:
+            # 名称与密钥都是打码后的展示值，提交时必须沿用存储里的原文。
+            name = str(project.get("name") or "未命名项目")
+        else:
+            name = self.project_name.text().strip() or "未命名项目"
         renamed = name != project.get("name")
         project["name"] = name
         project["base_url"] = self.base_url.text().strip()
-        key = self.api_key.text().strip()
+        key = str(project.get("api_key") or "") if self.screenshot_mode else self.api_key.text().strip()
         project["api_key"] = key
         keys = project.get("api_keys")
         if isinstance(keys, list) and keys:
@@ -949,6 +1051,8 @@ class QtMainWindow(QMainWindow):
     def _save_store(self):
         if self.relay_server:
             self.relay_server.invalidate_routes()
+        # 截图模式属于界面状态，落盘时统一写回，避免导入配置等路径把它冲回旧值。
+        self.store.setdefault("ui", {})["screenshot_mode"] = self.screenshot_mode
         try:
             self.store_service.save(self.store)
         except (OSError, RuntimeError) as exc:
@@ -966,7 +1070,7 @@ class QtMainWindow(QMainWindow):
         for entry in self.remote_model_entries:
             key = project_key_for_model(project, entry)
             self.remote_list.addItem(
-                f"{entry.get('id', '')}  [{api_key_label(key)}]" if len(keys) > 1 else entry.get("id", "")
+                f"{entry.get('id', '')}  [{self.masker.key_label(key)}]" if len(keys) > 1 else entry.get("id", "")
             )
         self.model_tree.clear()
         for model in project.get("models", []):
@@ -977,7 +1081,7 @@ class QtMainWindow(QMainWindow):
         return "-" if value is None else f"{value / 1000:.1f}s"
 
     def _render_model(self, model):
-        key = api_key_label(project_key_for_model(self.project(), model))
+        key = self.masker.key_label(project_key_for_model(self.project(), model))
         status = str(model.get("status", "未测试"))
         detail = (
             (model.get("error") or model.get("reply"))
@@ -990,7 +1094,7 @@ class QtMainWindow(QMainWindow):
                 key,
                 status,
                 self._format_ms(model.get("first_ms")),
-                str(detail or "").replace("\n", " ")[:180],
+                self.masker.mask(str(detail or "").replace("\n", " "))[:180],
             ]
         )
         item.setData(0, Qt.UserRole, model.get("id", ""))
@@ -1009,7 +1113,7 @@ class QtMainWindow(QMainWindow):
         menu.addAction("复制模型名称", lambda: self.copy_text(str(item.data(0, Qt.UserRole))) if item else None)
         menu.addAction("复制返回内容", self.copy_model_reply).setEnabled(item is not None)
         menu.addAction("设置渠道模型名", self.set_route_name).setEnabled(item is not None)
-        menu.addAction("设置密钥", self.assign_selected_key).setEnabled(item is not None)
+        menu.addAction("设置密钥", self.assign_selected_key).setEnabled(item is not None and not self.screenshot_mode)
         menu.addAction("删除", self.remove_selected).setEnabled(item is not None)
         menu.addSeparator()
         menu.addAction("移除全部模型", self.remove_all_models).setEnabled(self.model_tree.topLevelItemCount() > 0)
@@ -1061,7 +1165,10 @@ class QtMainWindow(QMainWindow):
 
     def delete_project(self):
         project = self.project()
-        if not project or QMessageBox.question(self, "删除项目", f"确定删除“{project['name']}”吗？") != QMessageBox.Yes:
+        if not project:
+            return
+        label = self.masker.project_label(project)
+        if QMessageBox.question(self, "删除项目", f"确定删除“{label}”吗？") != QMessageBox.Yes:
             return
         self.store["projects"] = [item for item in self.store["projects"] if item["id"] != project["id"]]
         if not self.store["projects"]:
@@ -1076,6 +1183,9 @@ class QtMainWindow(QMainWindow):
     def rename_project(self):
         project = self.project()
         if not project:
+            return
+        if self.screenshot_mode:
+            self._refuse_in_screenshot_mode("重命名项目")
             return
         name, ok = QInputDialog.getText(self, "重命名项目", "项目名称：", text=project["name"])
         if not ok:
@@ -1132,9 +1242,14 @@ class QtMainWindow(QMainWindow):
     def import_channels(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("渠道导入")
-        dialog.resize(700, 440)
+        apply_light_theme()
+        apply_window_style(dialog)
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel("支持 newapi_channel_conn JSON、Markdown 链接，或 URL 与密钥分行粘贴"))
+        # 说明文字必须允许换行：QLabel 不换行时它的 sizeHint 会直接顶成窗口最小宽度（约 660px），
+        # 缩放后的小屏上标题栏和按钮都会被挤出屏幕。
+        hint = QLabel("支持 newapi_channel_conn JSON、Markdown 链接，或 URL 与密钥分行粘贴")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
         editor = QPlainTextEdit()
         layout.addWidget(editor, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel | QDialogButtonBox.Ok)
@@ -1142,6 +1257,9 @@ class QtMainWindow(QMainWindow):
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
+        # 固定 700×440 在 400×400 逻辑像素的缩放下会超出屏幕；改为按可用区域收敛，
+        # 编辑器自带滚动条，窗口变矮时内容仍可滚动查看。
+        fit_window_to_screen(dialog, (700, 440), (360, 300))
         if dialog.exec() != QDialog.Accepted:
             return
         try:
@@ -1201,7 +1319,7 @@ class QtMainWindow(QMainWindow):
             if imported_count
             else "识别到的渠道均已存在，无需重复导入。"
         )
-        labels = self._duplicate_labels(duplicates)
+        labels = self._duplicate_labels(duplicates, self.masker)
         detail = "\n".join(f"- {label}" for label in labels)
         box = QMessageBox(self)
         box.setWindowTitle("渠道导入")
@@ -1223,11 +1341,12 @@ class QtMainWindow(QMainWindow):
         self.locate_project(target["id"])
 
     @staticmethod
-    def _duplicate_labels(projects):
+    def _duplicate_labels(projects, masker=None):
         """重名渠道用接口地址区分，仍重名时补序号，保证下拉框里每项都能唯一选中。"""
         labels = []
         for project in projects:
-            name = str(project.get("name", "未命名项目"))
+            # 截图模式下列表用打码别名，避免重复渠道提示里露出真实项目名。
+            name = masker.project_label(project) if masker is not None else str(project.get("name", "未命名项目"))
             host = urlsplit(str(project.get("base_url", ""))).hostname or ""
             base = f"{name}（{host}）" if host else name
             label = base
@@ -1260,9 +1379,13 @@ class QtMainWindow(QMainWindow):
         project = self.project()
         if not project:
             return
+        if self.screenshot_mode:
+            self._refuse_in_screenshot_mode("管理密钥")
+            return
         dialog = QDialog(self)
         dialog.setWindowTitle("管理 API 密钥")
-        dialog.resize(700, 420)
+        apply_light_theme()
+        apply_window_style(dialog)
         layout = QVBoxLayout(dialog)
         table = QTableWidget(0, 3)
         table.setHorizontalHeaderLabels(["名称", "密钥", "操作"])
@@ -1291,6 +1414,9 @@ class QtMainWindow(QMainWindow):
         actions.accepted.connect(dialog.accept)
         actions.rejected.connect(dialog.reject)
         layout.addWidget(actions)
+        # 固定 700×420 在 400×400 逻辑像素的缩放下会超出屏幕；表格自带滚动条，
+        # 按屏幕收敛后保存/取消/新增密钥仍留在可视区域。
+        fit_window_to_screen(dialog, (700, 420), (360, 300))
         if dialog.exec() != QDialog.Accepted:
             return
         keys = []
@@ -1616,7 +1742,7 @@ class QtMainWindow(QMainWindow):
         if not ids or not project:
             return
         keys = _project_keys(project)
-        values = [api_key_label(key) for key in keys]
+        values = [self.masker.key_label(key) for key in keys]
         selected, ok = QInputDialog.getItem(self, "设置密钥", "请选择模型使用的 API 密钥：", values, 0, False)
         if ok and selected:
             key_id = keys[values.index(selected)]["id"]
@@ -1652,7 +1778,9 @@ class QtMainWindow(QMainWindow):
         model = next((item for item in self.project()["models"] if item["id"] == ids[0]), None)
         if model:
             QMessageBox.information(
-                self, str(model.get("id", "模型")), str(model.get("reply") or model.get("error") or "暂无返回内容")
+                self,
+                str(model.get("id", "模型")),
+                self.masker.mask(str(model.get("reply") or model.get("error") or "暂无返回内容")),
             )
 
     def backup_config(self):
@@ -1694,6 +1822,8 @@ class QtMainWindow(QMainWindow):
             self.store_service.activate_import(data, imported_key)
             self.config_key = self.store_service.config_key
             self.store = data
+            # 截图模式是当前会话的界面状态，导入别人的配置不应该改变这里是否打码。
+            self.store.setdefault("ui", {})["screenshot_mode"] = self.screenshot_mode
             self.current_id = self.store.get("selected_project_id")
             self._ensure_selection()
             self.refresh_project_list()
@@ -1722,6 +1852,7 @@ class QtMainWindow(QMainWindow):
         if self.relay_dialog is not None:
             self.relay_dialog.refresh_projects()
             self.relay_dialog.update_controls()
+            self.relay_dialog.refresh_stats()
 
     def start_relay(self):
         if self.relay_server:
@@ -1775,12 +1906,21 @@ class QtMainWindow(QMainWindow):
         os.startfile(str(path)) if sys.platform == "win32" else None
 
     def set_status(self, text):
-        self.status_label.setText(str(text))
-        self.statusBar().showMessage(str(text))
+        message = self.masker.mask(text)
+        self.status_label.setText(message)
+        self.statusBar().showMessage(message)
 
     def _append_log(self, message):
         stamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.appendPlainText(f"[{stamp}] {message}")
+        # 留一份原始日志，切换截图模式后据此重新打码渲染。
+        self._log_lines.append(f"[{stamp}] {message}")
+        del self._log_lines[:-MAX_LOG_LINES]
+        self.log_text.appendPlainText(self.masker.mask(self._log_lines[-1]))
+
+    def _render_log(self):
+        self.log_text.clear()
+        for line in self._log_lines:
+            self.log_text.appendPlainText(self.masker.mask(line))
 
     def _post(self, callback, *args):
         self.post_requested.emit(callback, args)

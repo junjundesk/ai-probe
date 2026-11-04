@@ -30,10 +30,13 @@ def main() -> None:
         return
 
     from .config import load_or_create_config_key
+    from .qt_compat import apply_light_theme
 
     application = QApplication.instance() or QApplication(sys.argv)
     application.setApplicationName("AI Probe")
     application.setOrganizationName("AI Probe")
+    # Must precede load_or_create_config_key(), which can create the password dialog.
+    apply_light_theme(application)
 
     def ask_password(prompt):
         from PySide6.QtWidgets import QInputDialog, QLineEdit

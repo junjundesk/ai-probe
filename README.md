@@ -11,6 +11,7 @@
 - 多项目与多 API Key 管理
 - Chat、Responses、Anthropic 协议转换与本地兼容转发
 - 模型发现、请求头、代理和自定义提示词
+- 截图模式：一键把项目名称与 API 密钥打码（含本地中转窗口），适合截图分享
 - AES 加密的本地配置与用量统计
 - 无 GUI 的核心自检与自动化回归测试
 
@@ -72,6 +73,28 @@ python -m ai_probe --self-test
 python -m unittest discover -s tests -v
 ```
 
+## 桌面显示兼容性
+
+- 桌面界面使用统一的浅色配色，避免系统深色主题的白色文字与列表、模型树、日志区的白色背景混用。主窗口、独立中转窗口和启动密码框使用相同的显示策略。
+- 窗口大小按当前屏幕的可用区域（Qt 逻辑像素）设置；小屏幕或高 DPI 缩放下通过滚动访问内容，不要求关闭系统缩放。
+- Windows CI 使用原生 `windows` 平台插件，覆盖最低声明版本 PySide6 6.7.0，以及当前支持的最新版 PySide6 的额外 1.5× / 2× Qt 缩放（`QT_SCALE_FACTOR`，与系统缩放相乘）。Linux CI 继续使用 `offscreen`。这些自动化检查不能代替所有显卡、远程桌面和 Windows 版本的实机验证。
+
+如果升级后仍出现空白区域，请提供 Windows 版本、显示分辨率与缩放比例、系统深浅色主题，以及是源码启动还是打包 EXE；截图前请开启「截图模式」，不要提供 API 密钥或未脱敏的配置。源码环境可单独运行显示兼容性回归：
+
+```powershell
+python -m unittest discover -s tests -p test_ui_compat.py -v
+```
+
+在 Windows 上还可显式启用原生平台与额外缩放，检查真实窗口绘制（以下环境变量仅影响当前终端及其启动的程序）：
+
+```powershell
+$env:QT_QPA_PLATFORM = "windows"
+$env:QT_SCALE_FACTOR = "1.5"
+python -m unittest discover -s tests -p test_ui_compat.py -v
+```
+
+打包 EXE 的用户需要使用包含本次修复的重新构建版本，仅更新源码不会改变旧 EXE。
+
 ## 项目结构
 
 ```text
@@ -79,11 +102,13 @@ ai_probe/
   config.py       配置加密、路径和启动密钥
   client.py       上游 API 客户端与测活
   projects.py     项目和多 API Key 数据模型
+  masking.py      截图模式的名称与密钥打码
   protocols/      Chat、Responses、Anthropic 协议转换
   relay.py        本地兼容转发服务
   relay_service.py 无 GUI 中转服务进程（容器部署入口）
   usage.py        本地用量统计
   qt_app.py       PySide6 主窗口、模型工作区与本地中转界面
+  qt_compat.py    统一浅色配色与小屏 / 高 DPI 窗口适配
   store_service.py 无 GUI 的配置加载、归一化和加密存储
   entry.py        应用启动入口
 app.py            兼容原有启动方式的薄入口

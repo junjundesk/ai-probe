@@ -48,6 +48,8 @@ def default_store() -> dict:
             "system_prompt": "",
             "append_user_prompt": True,
         },
+        # 截图模式只影响界面显示，不改动存储里的项目内容。
+        "ui": {"screenshot_mode": False},
     }
 
 
@@ -131,6 +133,11 @@ def normalize_store(data: dict) -> dict:
     relay["request_debug_capture"] = bool(relay.get("request_debug_capture", False))
     relay["system_prompt"] = str(relay.get("system_prompt") or "")
     relay["append_user_prompt"] = bool(relay.get("append_user_prompt", True))
+    ui = data.get("ui")
+    if not isinstance(ui, dict):
+        ui = {}
+        data["ui"] = ui
+    ui["screenshot_mode"] = bool(ui.get("screenshot_mode", False))
     data["version"] = 2
     return data
 

@@ -9,6 +9,7 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from ai_probe.masking import KEY_MASK
 from ai_probe.store_service import StoreService, default_store, normalize_store
 
 # PySide6 依赖 Qt 的系统库（libEGL 等），精简容器与部分 Linux 环境里没有。
@@ -1034,6 +1035,241 @@ class MinimizeFallbackTests(unittest.TestCase):
                 self.assertIsNone(window.relay_dialog)
                 self.assertIsNone(window.relay_server)
                 relay_server.stop.assert_called_once_with()
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+
+@unittest.skipUnless(QT_AVAILABLE, QT_SKIP_REASON)
+class ScreenshotModeTests(unittest.TestCase):
+    """截图模式：项目名与密钥在主界面和本地中转窗口统一打码。"""
+
+    NAME_PRIMARY = "Alpha 生产渠道"
+    NAME_SECONDARY = "Beta 测试渠道"
+    KEY_PRIMARY = "sk-alpha-secret-111111111"
+    KEY_SECONDARY = "sk-beta-secret-222222222"
+
+    def _payload(self):
+        payload = default_store()
+        base = dict(payload["projects"][0])
+        payload["projects"] = [
+            {
+                **base,
+                "id": "p-a",
+                "name": self.NAME_PRIMARY,
+                "base_url": "https://a.example.com/v1",
+                "api_key": self.KEY_PRIMARY,
+                "api_keys": [{"id": "default", "name": "默认", "value": self.KEY_PRIMARY}],
+                "models": [
+                    {
+                        "id": "gpt-4o",
+                        "api_key_id": "default",
+                        "route_name": "",
+                        "status": "不可用",
+                        "first_ms": 12,
+                        "total_ms": 20,
+                        "reply": "",
+                        "error": f"invalid key {self.KEY_PRIMARY} for {self.NAME_PRIMARY}",
+                    }
+                ],
+                "discovered_models": [{"id": "gpt-4o", "api_key_id": "default"}],
+            },
+            {
+                **base,
+                "id": "p-b",
+                "name": self.NAME_SECONDARY,
+                "base_url": "https://b.example.com/v1",
+                "api_key": self.KEY_SECONDARY,
+                "api_keys": [{"id": "default", "name": "默认", "value": self.KEY_SECONDARY}],
+                "models": [],
+            },
+        ]
+        payload["selected_project_id"] = "p-a"
+        payload["relay"]["project_ids"] = ["p-a"]
+        return payload
+
+    def _window(self, directory):
+        path = Path(directory) / "config.json"
+        service = StoreService(b"0123456789abcdef0123456789abcdef", path)
+        service.save(self._payload())
+        window = QtMainWindow(service.config_key, data_file=path, usage_file=Path(directory) / "usage.json")
+        window.resize(1400, 900)
+        window.show()
+        _QT_APP.processEvents()
+        return window
+
+    @staticmethod
+    def _visible_texts(window):
+        """收集会出现在截图里的控件文本。"""
+        texts = [window.windowTitle(), window.status_label.text(), window.log_text.toPlainText()]
+        texts += [window.project_list.item(row).text() for row in range(window.project_list.count())]
+        texts.append(window.project_name.text())
+        tree = window.model_tree
+        texts += [
+            tree.topLevelItem(row).text(column)
+            for row in range(tree.topLevelItemCount())
+            for column in range(tree.columnCount())
+        ]
+        texts += [window.remote_list.item(row).text() for row in range(window.remote_list.count())]
+        dialog = window.relay_dialog
+        if dialog is not None:
+            texts.append(dialog.url_label.text())
+            texts += [dialog.projects.item(row).text() for row in range(dialog.projects.count())]
+            table = dialog.stats_table
+            texts += [
+                table.item(row, column).text()
+                for row in range(table.rowCount())
+                for column in range(table.columnCount())
+                if table.item(row, column) is not None
+            ]
+        return "\n".join(texts)
+
+    def _assert_no_secrets(self, window):
+        texts = self._visible_texts(window)
+        for secret in (self.NAME_PRIMARY, self.NAME_SECONDARY, self.KEY_PRIMARY, self.KEY_SECONDARY):
+            self.assertNotIn(secret, texts, f"截图模式下仍能看到：{secret}")
+
+    def test_screenshot_mode_masks_main_window_and_relay_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = self._window(directory)
+            try:
+                window.open_relay()
+                window.usage_stats.record(window.project("p-a"), "gpt-4o", 1200, 400, 900)
+                window.relay_dialog.refresh_stats()
+                window._append_log(f"请求 {self.NAME_PRIMARY} 失败：{self.KEY_PRIMARY}")
+                window.set_status(f"已复制渠道：{self.NAME_PRIMARY}")
+                _QT_APP.processEvents()
+                # 先确认这些文案平时确实带着真名，后面的断言才有意义。
+                self.assertIn(self.NAME_PRIMARY, self._visible_texts(window))
+
+                window.set_screenshot_mode(True)
+                _QT_APP.processEvents()
+
+                self.assertEqual(
+                    [window.project_list.item(row).text() for row in range(window.project_list.count())],
+                    ["项目 #1", "项目 #2"],
+                )
+                self.assertEqual(window.project_name.text(), "项目 #1")
+                self.assertTrue(window.project_name.isReadOnly())
+                self.assertEqual(window.api_key.echoMode(), QLineEdit.Password)
+                self.assertFalse(window.show_key_button.isEnabled())
+                self.assertEqual(window.model_tree.topLevelItem(0).text(1), f"默认 · {KEY_MASK}")
+                self.assertEqual(window.relay_dialog.projects.item(0).text().split(" · ")[0], "项目 #1")
+                self.assertEqual(window.relay_dialog.stats_table.item(0, 1).text(), "项目 #1-gpt-4o")
+                self.assertIn("截图模式", window.windowTitle())
+                self._assert_no_secrets(window)
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_masked_form_never_writes_aliases_back_to_store(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            window = self._window(directory)
+            try:
+                window.set_screenshot_mode(True)
+                # 名称与密钥输入框在打码时只读，这里强行改值模拟误操作。
+                window.project_name.setText("改名尝试")
+                window.api_key.setText("sk-fake-000000")
+                window._flush_form_save()
+                _QT_APP.processEvents()
+
+                project = window.project("p-a")
+                self.assertEqual(project["name"], self.NAME_PRIMARY)
+                self.assertEqual(project["api_key"], self.KEY_PRIMARY)
+                self.assertEqual(project["api_keys"][0]["value"], self.KEY_PRIMARY)
+
+                reloaded = StoreService(window.store_service.config_key, path).load()
+                self.assertEqual(reloaded["projects"][0]["name"], self.NAME_PRIMARY)
+                self.assertEqual(reloaded["projects"][0]["api_key"], self.KEY_PRIMARY)
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_screenshot_mode_persists_and_restores_real_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            window = self._window(directory)
+            config_key = window.store_service.config_key
+            try:
+                window.set_screenshot_mode(True)
+                _QT_APP.processEvents()
+                self.assertTrue(StoreService(config_key, path).load()["ui"]["screenshot_mode"])
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+            restored = QtMainWindow(config_key, data_file=path, usage_file=Path(directory) / "usage.json")
+            try:
+                self.assertTrue(restored.screenshot_mode)
+                self.assertEqual(restored.project_list.item(0).text(), "项目 #1")
+                self.assertFalse(restored.show_key_button.isEnabled())
+
+                restored.set_screenshot_mode(False)
+                _QT_APP.processEvents()
+                self.assertEqual(restored.project_list.item(0).text(), self.NAME_PRIMARY)
+                self.assertEqual(restored.project_name.text(), self.NAME_PRIMARY)
+                self.assertFalse(restored.project_name.isReadOnly())
+                self.assertTrue(restored.show_key_button.isEnabled())
+                self.assertFalse(StoreService(config_key, path).load()["ui"]["screenshot_mode"])
+            finally:
+                restored.close()
+                _QT_APP.processEvents()
+
+    def test_screenshot_mode_locks_name_and_key_management(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = self._window(directory)
+            try:
+                window.set_screenshot_mode(True)
+                with mock.patch.object(QMessageBox, "information") as information:
+                    window.rename_project()
+                    window.manage_api_keys()
+                self.assertEqual(information.call_count, 2)
+                self.assertEqual(window.project()["name"], self.NAME_PRIMARY)
+                self.assertEqual(window.project_name.text(), "项目 #1")
+                self.assertIn("截图模式", window.status_label.text())
+
+                window.set_screenshot_mode(False)
+                self.assertTrue(window.show_key_button.isEnabled())
+                self.assertTrue(window.keys_button.isEnabled())
+                self.assertFalse(window.project_name.isReadOnly())
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_toggling_off_keeps_edits_made_while_masked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = self._window(directory)
+            try:
+                window.set_screenshot_mode(True)
+                window.base_url.setText("https://masked-edit.example.com/v1")
+                # 不等 450ms 防抖，直接切回，编辑仍应落盘并显示。
+                window.set_screenshot_mode(False)
+                _QT_APP.processEvents()
+                self.assertEqual(window.project()["base_url"], "https://masked-edit.example.com/v1")
+                self.assertEqual(window.base_url.text(), "https://masked-edit.example.com/v1")
+                self.assertEqual(window.project_name.text(), self.NAME_PRIMARY)
+            finally:
+                window.close()
+                _QT_APP.processEvents()
+
+    def test_relay_search_accepts_alias_while_masked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = self._window(directory)
+            try:
+                window.set_screenshot_mode(True)
+                window.open_relay()
+                dialog = window.relay_dialog
+                dialog.project_search.setText("项目 #2")
+                _QT_APP.processEvents()
+                hidden = {
+                    dialog.projects.item(row).data(Qt.UserRole): dialog.projects.item(row).isHidden()
+                    for row in range(dialog.projects.count())
+                }
+                self.assertEqual(hidden, {"p-a": True, "p-b": False})
+
+                dialog.project_search.clear()
+                self.assertFalse(any(dialog.projects.item(row).isHidden() for row in range(dialog.projects.count())))
             finally:
                 window.close()
                 _QT_APP.processEvents()
