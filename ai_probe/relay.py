@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+import ssl
 import threading
 import time
 import uuid
@@ -89,6 +90,53 @@ def _upstream_exception_message(exc: Exception, url: str = "") -> str:
         host = urlsplit(url).hostname or "上游"
         return f"无法连接上游（{host}）：{exc}"
     return str(exc) or type(exc).__name__
+
+
+# 只有证书类问题才值得「重试也白搭」；握手阶段的 EOF/复位是连接层抖动，重试往往一次就好。
+_CERT_FAILURE_MARKERS = (
+    "certificate verify failed",
+    "certificate_verify_failed",
+    "unable to get local issuer certificate",
+    "self signed certificate",
+    "self-signed certificate",
+    "certificate has expired",
+    "certificate is not yet valid",
+    "hostname mismatch",
+)
+
+
+def _is_certificate_failure(exc: BaseException) -> bool:
+    """区分「证书校验失败」与「TLS 握手被中断」。
+
+    requests 只把两者都包成 SSLError，但语义完全不同：证书问题换多少次握手都一样，
+    而 SSLEOF/连接复位属于网络抖动，正是最该重试的一类错误。VERIFY_SSL 已全局关闭，
+    线上几乎只会出现后者，所以不能再对所有 SSLError 一律放弃重试。
+    """
+    node: BaseException | None = exc
+    for _ in range(6):
+        if node is None:
+            return False
+        if isinstance(node, ssl.SSLCertVerificationError):
+            return True
+        if any(marker in str(node).lower() for marker in _CERT_FAILURE_MARKERS):
+            return True
+        reason = getattr(node, "reason", None)
+        if isinstance(reason, BaseException):
+            node = reason
+        elif node.args and isinstance(node.args[0], BaseException):
+            node = node.args[0]
+        else:
+            return False
+    return False
+
+
+def _tls_handshake_failure(exc: BaseException) -> Exception:
+    """重试用尽后，给握手类 TLS 失败补一句能照着做的说明。"""
+    note = (
+        f"（TLS 握手连续 {_UPSTREAM_STREAM_ATTEMPTS} 次失败，通常是网络抖动、代理或中间设备中断了连接，稍后重试即可）"
+    )
+    request = getattr(exc, "request", None)
+    return requests.exceptions.SSLError(f"{exc}{note}", request=request)
 
 
 # 调试模式下的完整报文捕获上限。
@@ -952,12 +1000,15 @@ class RelayServer:
                 )
             except Exception as exc:
                 last_exc = exc
-                # 证书校验失败重试也必然失败，只会把多次 TLS 握手耗时叠加给用户。
-                if requests is not None and isinstance(exc, requests.exceptions.SSLError):
+                # 证书类失败重试也必然失败，只会把多次 TLS 握手耗时叠加给用户；
+                # 其余 TLS 失败（UNEXPECTED_EOF、握手复位、alert）属于连接层抖动，要重试。
+                if _is_certificate_failure(exc):
                     raise
                 if attempt + 1 >= _UPSTREAM_STREAM_ATTEMPTS:
-                    raise
+                    break
                 time.sleep(_UPSTREAM_STREAM_BACKOFF[min(attempt, len(_UPSTREAM_STREAM_BACKOFF) - 1)])
+        if requests is not None and isinstance(last_exc, requests.exceptions.SSLError):
+            raise _tls_handshake_failure(last_exc) from last_exc
         raise last_exc
 
     @classmethod

@@ -1,7 +1,12 @@
+import ssl
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
+import requests
+import urllib3
+
 from ai_probe.client import VERIFY_SSL, OpenAIClient
+from ai_probe.relay import _is_certificate_failure
 
 
 class SSLVerificationTests(unittest.TestCase):
@@ -68,6 +73,39 @@ class SSLVerificationTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "不可用")
         self.assertEqual(result["error"], "测活超时（1s 未完成）")
+
+
+class TlsFailureClassificationTests(unittest.TestCase):
+    """证书问题重试无意义，握手被中断才是真正该重试的那一类 SSLError。"""
+
+    def test_certificate_verification_failure_is_permanent(self):
+        failure = requests.exceptions.SSLError(
+            "HTTPSConnectionPool(host='api.example.com', port=443): Max retries exceeded with url: /v1/responses "
+            "(Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify "
+            "failed: unable to get local issuer certificate (_ssl.c:1018)')))"
+        )
+
+        self.assertTrue(_is_certificate_failure(failure))
+
+    def test_wrapped_urllib3_certificate_error_is_detected(self):
+        cause = ssl.SSLCertVerificationError(1, "certificate rejected")
+        failure = requests.exceptions.SSLError(
+            urllib3.exceptions.MaxRetryError(None, "/v1/responses", urllib3.exceptions.SSLError(cause))
+        )
+
+        self.assertTrue(_is_certificate_failure(failure))
+
+    def test_handshake_eof_is_retryable(self):
+        failure = requests.exceptions.SSLError(
+            "HTTPSConnectionPool(host='jun.jzgo.top', port=443): Max retries exceeded with url: /v1/responses "
+            "(Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of "
+            "protocol (_ssl.c:1018)')))"
+        )
+
+        self.assertFalse(_is_certificate_failure(failure))
+
+    def test_plain_connection_error_is_retryable(self):
+        self.assertFalse(_is_certificate_failure(requests.exceptions.ConnectionError("connection reset by peer")))
 
 
 if __name__ == "__main__":

@@ -1016,6 +1016,102 @@ class RelayErrorLoggingTests(unittest.TestCase):
         self.assertIn("api.a6api.com", message)
         self.assertEqual(upstream_post.call_count, 1)
 
+    def test_relay_retries_transient_tls_handshake_failure(self):
+        """TLS 握手被中断是连接层抖动，不能当成证书错误一次就放弃。"""
+        project = {
+            "id": "project-test",
+            "name": "test",
+            "base_url": "https://jun.jzgo.top",
+            "api_key": "upstream-secret",
+            "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
+            "proxy_url": "",
+            "api_mode": "anthropic",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "claude-test", "api_key_id": "key-test"}],
+        }
+        app = self.App({"projects": [project], "relay": {"project_ids": ["project-test"]}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=False)
+        failure = requests.exceptions.SSLError(
+            "HTTPSConnectionPool(host='jun.jzgo.top', port=443): Max retries exceeded with url: /v1/messages "
+            "(Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of "
+            "protocol (_ssl.c:1018)')))"
+        )
+
+        class UpstreamResponse:
+            ok = True
+            status_code = 200
+            headers = {"Content-Type": "application/json"}
+            content = (
+                b'{"id":"msg_1","type":"message","role":"assistant","model":"claude-test",'
+                b'"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":3,"output_tokens":2}}'
+            )
+
+            def iter_content(self, chunk_size=8192):
+                yield self.content
+
+            def close(self):
+                pass
+
+        with (
+            patch("ai_probe.relay.requests.post", side_effect=[failure, UpstreamResponse()]) as upstream_post,
+            patch("ai_probe.relay.time.sleep"),
+        ):
+            server.start()
+            try:
+                status, _body = self.post_json(
+                    server,
+                    "/v1/messages",
+                    {"model": "claude-test", "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]},
+                )
+            finally:
+                server.stop()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(upstream_post.call_count, 2)
+
+    def test_relay_gives_up_after_repeated_tls_handshake_failures(self):
+        project = {
+            "id": "project-test",
+            "name": "test",
+            "base_url": "https://jun.jzgo.top",
+            "api_key": "upstream-secret",
+            "api_keys": [{"id": "key-test", "name": "default", "value": "upstream-secret"}],
+            "proxy_url": "",
+            "api_mode": "anthropic",
+            "headers_mode": "json",
+            "custom_headers": "",
+            "models": [{"id": "claude-test", "api_key_id": "key-test"}],
+        }
+        app = self.App({"projects": [project], "relay": {"project_ids": ["project-test"]}})
+        server = RelayServer(app, "127.0.0.1", 0, error_logging_enabled=False)
+        failure = requests.exceptions.SSLError(
+            "HTTPSConnectionPool(host='jun.jzgo.top', port=443): Max retries exceeded with url: /v1/messages "
+            "(Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of "
+            "protocol (_ssl.c:1018)')))"
+        )
+
+        with (
+            patch("ai_probe.relay.requests.post", side_effect=failure) as upstream_post,
+            patch("ai_probe.relay.time.sleep"),
+        ):
+            server.start()
+            try:
+                status, body = self.post_json(
+                    server,
+                    "/v1/messages",
+                    {"model": "claude-test", "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]},
+                )
+            finally:
+                server.stop()
+
+        self.assertEqual(status, 502)
+        message = json.loads(body)["error"]["message"]
+        self.assertIn("上游 TLS 连接失败", message)
+        self.assertIn("jun.jzgo.top", message)
+        self.assertIn("TLS 握手连续 3 次失败", message)
+        self.assertEqual(upstream_post.call_count, 3)
+
     def test_relay_reports_upstream_timeout_as_gateway_timeout(self):
         project = {
             "id": "project-test",
