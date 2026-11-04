@@ -298,6 +298,11 @@ if (saved_again["api_keys"][-1]["name"], saved_again["api_keys"][-1]["value"]) !
 window.close()
 settle(app)
 print("DIALOG_COMPAT_OK")
+# 某些 Linux/Windows 环境会在解释器销毁 QApplication 时崩溃，
+# 断言已全部通过，这里刷新输出后直接结束进程。
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(0)
 """
 
 
@@ -317,7 +322,7 @@ class DialogScreenCompatibilityTests(unittest.TestCase):
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), env.get("PYTHONPATH", "")]))
             completed = subprocess.run(
-                [sys.executable, "-c", _CHILD_SCRIPT, scenario],
+                [sys.executable, "-u", "-c", _CHILD_SCRIPT, scenario],
                 cwd=ROOT,
                 env=env,
                 capture_output=True,

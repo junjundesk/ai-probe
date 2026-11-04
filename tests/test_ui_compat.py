@@ -51,6 +51,21 @@ ACTIVE_HIGHLIGHT = "#1565c0"
 INACTIVE_HIGHLIGHT = "#cdddf1"
 
 
+def finish(message="UI_COMPAT_OK"):
+    # 打印成功标记后立即结束进程。Linux offscreen 与 Windows 原生环境都出现过
+    # 销毁 QApplication 时崩溃（SIGSEGV/SIGBUS/0xC0000409）；断言已全部通过，
+    # 不能让析构过程决定退出码。
+    app = QApplication.instance()
+    if app is not None:
+        for widget in QApplication.topLevelWidgets():
+            widget.close()
+        app.processEvents()
+    print(message)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
+
+
 def install_dark_palette(app):
     dark = QPalette()
     colors = {
@@ -141,7 +156,7 @@ def scenario_entry():
     app.setPalette(sentinel)
     apply_light_theme(app)
     assert app.palette().color(QPalette.ColorRole.Window).name() == "#123456"
-    print("UI_COMPAT_OK")
+    finish()
 
 
 def scenario_main():
@@ -240,7 +255,7 @@ def scenario_main():
         assert workspace.verticalScrollBar().maximum() == 0
 
         window.close()
-    print("UI_COMPAT_OK")
+    finish()
 
 
 def scenario_relay():
@@ -315,7 +330,7 @@ def scenario_relay():
         password.close()
         relay.close()
         window.close()
-    print("UI_COMPAT_OK")
+    finish()
 
 
 def scenario_high_dpi():
@@ -371,7 +386,7 @@ def scenario_high_dpi():
         assert relay.stats_table.isVisible()
         relay.close()
         window.close()
-    print("UI_COMPAT_OK")
+    finish()
 
 
 def scenario_native():
@@ -439,7 +454,7 @@ def scenario_native():
         print("native", app.primaryScreen().availableGeometry(), "DPR", window.devicePixelRatioF())
         relay.close()
         window.close()
-    print("UI_COMPAT_OK")
+    finish()
 
 
 def avail_as_text(rect):
@@ -464,6 +479,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # 兜底：若某个场景没走到 finish()，也不要让 Qt 析构影响退出码。
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 """
 
 
@@ -476,7 +495,7 @@ class UiCompatibilityTests(unittest.TestCase):
         env.pop("QT_SCREEN_SCALE_FACTORS", None)
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), env.get("PYTHONPATH", "")]))
         result = subprocess.run(
-            [sys.executable, "-c", _CHILD_SCRIPT, scenario],
+            [sys.executable, "-u", "-c", _CHILD_SCRIPT, scenario],
             cwd=ROOT,
             env=env,
             capture_output=True,
