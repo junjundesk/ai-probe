@@ -19,6 +19,8 @@ logs/
 # Local build artifacts and historical backups
 build/
 dist/
+artifacts/
+.workbuddy/
 *.exe
 *.zip
 app - 副本*.py
