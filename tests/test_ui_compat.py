@@ -294,9 +294,10 @@ def scenario_relay():
             check_light_widget(widget)
             assert widget.palette().color(QPalette.ColorRole.Text).name() == TEXT
         assert relay.projects.viewport().palette().color(QPalette.ColorRole.Base).name() == BASE
-        assert relay.tabs.count() == 3
+        assert relay.tabs.count() == 4
         assert relay.tabs.widget(0) is relay.config_tab
         assert relay.tabs.widget(2) is relay.stats_tab
+        assert relay.tabs.widget(3) is relay.pricing_tab
         assert isinstance(relay.config_tab, QScrollArea)
         assert relay.config_tab.objectName() == "relayConfigScroll"
         assert relay.config_tab.widget().isAncestorOf(relay.start_button)

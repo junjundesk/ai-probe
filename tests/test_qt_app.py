@@ -745,15 +745,65 @@ class RelayStatisticsTests(unittest.TestCase):
         self.window.close()
         _QT_APP.processEvents()
 
+    def test_pricing_rules_drive_cost_column_and_summary(self):
+        project = self.window.project()
+        self.window.usage_stats.record(project, "priced", 1_000_000, 100_000, 400_000)
+        self.window.usage_stats.record(project, "free", 10, 1, 0)
+        dialog = self.dialog
+        rule = dialog._add_pricing_rule(model="priced")
+        row = dialog.pricing_table.rowCount() - 1
+        dialog.pricing_table.item(row, 2).setText("2")
+        dialog.pricing_table.item(row, 3).setText("0.5")
+        dialog.pricing_table.item(row, 4).setText("10")
+        dialog.pricing_table.item(row, 5).setText("1.5")
+        saved = self.window.store["relay"]["pricing"]["rules"]
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["id"], rule["id"])
+        self.assertEqual(
+            (saved[0]["input"], saved[0]["cached_input"], saved[0]["output"], saved[0]["multiplier"]),
+            (2.0, 0.5, 10.0, 1.5),
+        )
+        dialog.refresh_stats()
+        costs = {
+            dialog.stats_table.item(index, 1).text().rsplit("-", 1)[-1]: dialog.stats_table.item(index, 9).text()
+            for index in range(dialog.stats_table.rowCount())
+        }
+        self.assertEqual(costs["priced"], "$3.60")
+        self.assertEqual(costs["free"], "未定价")
+        self.assertIn("花费 $3.60（1 个未定价）", dialog.stats_summary.text())
+
+        dialog.pricing_table.item(row, 5).setText("abc")
+        self.assertEqual(self.window.store["relay"]["pricing"]["rules"][0]["multiplier"], 1.5)
+        self.assertTrue(dialog.pricing_table.item(row, 5).toolTip())
+
+        self.assertEqual(dialog._fill_unpriced_rules(), 1)
+        models = [rule["model"] for rule in self.window.store["relay"]["pricing"]["rules"]]
+        self.assertEqual(models, ["priced", "free"])
+
+        dialog.pricing_table.selectRow(0)
+        dialog._remove_pricing_rules()
+        models = [rule["model"] for rule in self.window.store["relay"]["pricing"]["rules"]]
+        self.assertEqual(models, ["free"])
+
+    def test_live_speed_label_and_average_speed_column(self):
+        project = self.window.project()
+        self.window.usage_stats.record(project, "fast", 10, 200, 0, 4000)
+        self.dialog.refresh_stats()
+        self.dialog.refresh_live()
+        self.assertEqual(self.dialog.stats_live.text(), "实时速度：中转未启动")
+        self.assertEqual(self.dialog.stats_table.item(0, 8).text(), "50.0")
+
     def test_cached_counts_and_totals_are_displayed_without_double_counting(self):
         project = self.window.project()
         self.window.usage_stats.record(project, "small", 1_000, 0, 0)
         self.window.usage_stats.record(project, "large", 10_000, 1_500, 9_500)
         self.dialog.refresh_stats()
         table = self.dialog.stats_table
-        self.assertEqual(table.columnCount(), 8)
+        self.assertEqual(table.columnCount(), 10)
         self.assertEqual(table.horizontalHeaderItem(6).text(), "已缓存")
         self.assertEqual(table.horizontalHeaderItem(7).text(), "缓存率")
+        self.assertEqual(table.horizontalHeaderItem(8).text(), "速度 tok/s")
+        self.assertEqual(table.horizontalHeaderItem(9).text(), "花费")
         self.assertEqual(
             [table.item(0, col).text() for col in range(8)],
             ["1", f"{project['name']}-large", "1", "10,000", "1,500", "11,500", "9,500", "95.0%"],
@@ -831,7 +881,9 @@ class RelayStatisticsTests(unittest.TestCase):
         with mock.patch("ai_probe.qt_app.QMessageBox.question", return_value=QMessageBox.Yes):
             self.dialog._clear_stats()
         self.assertEqual(self.dialog.stats_table.rowCount(), 0)
-        self.assertEqual(self.dialog.stats_summary.text(), "请求 0 · 输入 0 · 输出 0 · 总量 0 · 已缓存 0 · 缓存率 -")
+        self.assertEqual(
+            self.dialog.stats_summary.text(), "请求 0 · 输入 0 · 输出 0 · 总量 0 · 已缓存 0 · 缓存率 - · 花费 $0.00"
+        )
         self.assertEqual(self.dialog.stats_table.editTriggers(), QAbstractItemView.NoEditTriggers)
 
 

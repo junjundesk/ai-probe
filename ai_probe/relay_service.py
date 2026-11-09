@@ -103,8 +103,8 @@ class RelayService:
     def _log(message):
         LOGGER.info("%s", message)
 
-    def record_relay_usage(self, project, model, input_tokens, output_tokens, cached_tokens):
-        self.usage_stats.record(project, model, input_tokens, output_tokens, cached_tokens)
+    def record_relay_usage(self, project, model, input_tokens, output_tokens, cached_tokens, speed_ms=0):
+        self.usage_stats.record(project, model, input_tokens, output_tokens, cached_tokens, speed_ms)
 
     def start(self) -> RelayServer:
         relay = self.store["relay"]

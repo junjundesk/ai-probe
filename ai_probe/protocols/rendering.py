@@ -591,8 +591,9 @@ class _StreamRenderer:
 class _SSEUsageCollector:
     """Extract token usage from a passthrough SSE byte stream without buffering it."""
 
-    def __init__(self, api_mode: str):
+    def __init__(self, api_mode: str, on_text=None):
         self.api_mode = api_mode
+        self.on_text = on_text
         self.buffer = bytearray()
         self.input_tokens = 0
         self.output_tokens = 0
@@ -629,6 +630,10 @@ class _SSEUsageCollector:
             return
         if not isinstance(payload, dict):
             return
+        if self.on_text is not None:
+            text = _sse_delta_text(payload, self.api_mode)
+            if text:
+                self.on_text(text)
         usage = payload.get("usage")
         if self.api_mode == "responses" and not isinstance(usage, dict):
             response_data = payload.get("response")
@@ -644,3 +649,34 @@ class _SSEUsageCollector:
         self.input_tokens = max(self.input_tokens, input_tokens)
         self.output_tokens = max(self.output_tokens, output_tokens)
         self.cached_tokens = max(self.cached_tokens, cached_tokens)
+
+
+def _sse_delta_text(payload: dict, api_mode: str) -> str:
+    """提取一个 SSE 事件中新生成的文本（正文、推理、工具参数），用于实时测速。"""
+    parts = []
+    if api_mode == "anthropic":
+        if payload.get("type") == "content_block_delta":
+            delta = payload.get("delta") or {}
+            if isinstance(delta, dict):
+                for key in ("text", "thinking", "partial_json"):
+                    if isinstance(delta.get(key), str):
+                        parts.append(delta[key])
+    elif api_mode == "responses":
+        event_type = str(payload.get("type") or "")
+        if event_type.endswith(".delta") and isinstance(payload.get("delta"), str):
+            parts.append(payload["delta"])
+    else:
+        for choice in payload.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            for key in ("content", "reasoning_content", "reasoning"):
+                if isinstance(delta.get(key), str):
+                    parts.append(delta[key])
+            for call in delta.get("tool_calls") or []:
+                function = call.get("function") if isinstance(call, dict) else None
+                if isinstance(function, dict) and isinstance(function.get("arguments"), str):
+                    parts.append(function["arguments"])
+    return "".join(parts)

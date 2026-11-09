@@ -36,6 +36,7 @@ from .protocols import (
     _SSEUsageCollector,
     _StreamRenderer,
 )
+from .throughput import ThroughputMeter
 from .utils import _is_function_only_tools_error, error_message_from_response, extract_usage_tokens
 
 _CALL_OUTPUT_TYPES = {
@@ -525,6 +526,10 @@ class RelayServer:
         self._responses_function_only = set()
         # 只认自适应思考的 Anthropic 上游：被 400 拒绝过一次就记住，下次直接改写。
         self._anthropic_adaptive_thinking = set()
+        self.throughput = ThroughputMeter()
+
+    def start_probe(self, project: dict, model: str):
+        return self.throughput.start((str((project or {}).get("id", "") or ""), str(model or "")))
 
     def start(self):
         owner = self
@@ -1266,6 +1271,9 @@ class RelayServer:
         usage = context.get("usage")
         if isinstance(usage, dict) and any(int(value or 0) for value in usage.values()):
             entry["usage"] = usage
+        speed = context.get("output_tokens_per_second")
+        if speed:
+            entry["output_tokens_per_second"] = speed
         try:
             log_dir = RELAY_REQUEST_LOG.parent
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -1278,7 +1286,7 @@ class RelayServer:
         except OSError as log_exc:
             self.app._post(self.app._log, f"中转请求日志写入失败：{log_exc}")
 
-    def note_request_usage(self, handler, input_tokens, output_tokens, cached_tokens):
+    def note_request_usage(self, handler, input_tokens, output_tokens, cached_tokens, speed_ms=0):
         context = getattr(handler, "_relay_request_context", None)
         if context is None:
             return
@@ -1287,6 +1295,8 @@ class RelayServer:
             "output_tokens": int(output_tokens or 0),
             "cached_tokens": int(cached_tokens or 0),
         }
+        if speed_ms and output_tokens:
+            context["output_tokens_per_second"] = round(int(output_tokens) / (int(speed_ms) / 1000), 1)
 
     def log_exception(self, stage: str, exc: Exception, **context):
         self.log_error(
@@ -1494,12 +1504,15 @@ class RelayServer:
     @staticmethod
     def passthrough_stream(app, handler, response, upstream_mode, project, model, server=None, debug_capture=False):
         RelayServer._response_headers(handler, response, {"content-encoding", "transfer-encoding", "content-length"})
-        collector = _SSEUsageCollector(upstream_mode)
+        probe = server.start_probe(project, model) if server is not None else None
+        collector = _SSEUsageCollector(upstream_mode, on_text=probe.add_text if probe else None)
         responses_tracker = _ResponsesStreamTracker(model) if upstream_mode == "responses" else None
         debug_buf = bytearray() if debug_capture and server is not None else None
         try:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
+                    if probe:
+                        probe.mark_chunk()
                     if responses_tracker:
                         responses_tracker.feed(chunk)
                     handler.wfile.write(chunk)
@@ -1532,6 +1545,7 @@ class RelayServer:
         finally:
             collector.finish()
             response.close()
+            speed_ms = probe.finish(collector.output_tokens) if probe else 0
         if debug_buf is not None:
             handler._relay_request_context["debug_response_body"] = server._debug_body(bytes(debug_buf))
             handler._relay_request_context["debug_response_headers"] = server._debug_headers(response.headers)
@@ -1540,8 +1554,11 @@ class RelayServer:
             upstream_mode, input_tokens, output_tokens, cached_tokens
         )
         if server is not None:
-            server.note_request_usage(handler, input_tokens, output_tokens, cached_tokens)
-        app.record_relay_usage(project, model, input_tokens, output_tokens, cached_tokens)
+            server.note_request_usage(handler, input_tokens, output_tokens, cached_tokens, speed_ms)
+        if speed_ms:
+            app.record_relay_usage(project, model, input_tokens, output_tokens, cached_tokens, speed_ms)
+        else:
+            app.record_relay_usage(project, model, input_tokens, output_tokens, cached_tokens)
 
     def write_upstream(
         self,
@@ -1630,8 +1647,15 @@ class RelayServer:
         upstream_sink = bytearray() if debug_capture else None
         client_sink = bytearray() if debug_capture else None
         renderer = _StreamRenderer(incoming_mode, model, custom_tool_names)
+        probe = self.start_probe(project, model)
+        speed_ms = 0
         try:
             for event in _canonical_stream_events(response, upstream_mode, model, custom_tool_names):
+                probe.mark_chunk()
+                if event.get("type") in {"text", "reasoning"}:
+                    probe.add_text(event.get("text", ""))
+                elif event.get("type") == "tool_args":
+                    probe.add_text(event.get("arguments", ""))
                 if upstream_sink is not None and len(upstream_sink) < DEBUG_CAPTURE_LIMIT:
                     line = json.dumps(event, ensure_ascii=False)
                     upstream_sink.extend(f"{line}\n".encode()[: max(0, DEBUG_CAPTURE_LIMIT - len(upstream_sink))])
@@ -1678,11 +1702,15 @@ class RelayServer:
                     "client_output": self._sanitize_debug_value(client_sink.decode("utf-8", "replace")),
                 }
             response.close()
+            speed_ms = probe.finish(renderer.output_tokens)
             input_tokens, output_tokens, cached_tokens = RelayServer._normalize_usage(
                 upstream_mode,
                 renderer.input_tokens,
                 renderer.output_tokens,
                 renderer.cached_tokens,
             )
-            self.note_request_usage(handler, input_tokens, output_tokens, cached_tokens)
-            self.app.record_relay_usage(project, model, input_tokens, output_tokens, cached_tokens)
+            self.note_request_usage(handler, input_tokens, output_tokens, cached_tokens, speed_ms)
+            if speed_ms:
+                self.app.record_relay_usage(project, model, input_tokens, output_tokens, cached_tokens, speed_ms)
+            else:
+                self.app.record_relay_usage(project, model, input_tokens, output_tokens, cached_tokens)

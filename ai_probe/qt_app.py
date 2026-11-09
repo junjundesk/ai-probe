@@ -52,10 +52,12 @@ from PySide6.QtWidgets import (
 from .client import OpenAIClient
 from .config import DATA_FILE, MAX_LOG_LINES, MAX_WORKERS, PROBE_TIMEOUT, RELAY_ERROR_LOG, USAGE_FILE
 from .masking import ScreenshotMasker
+from .pricing import find_rule, format_cost, normalize_pricing, normalize_rule, summarize
 from .projects import _project_keys, _sync_project_keys, new_project, project_key_for_model
 from .qt_compat import apply_light_theme, apply_window_style, fit_window_to_screen, scrollable
 from .relay import RelayServer
 from .store_service import StoreService
+from .throughput import ThroughputMeter
 from .usage import UsageStats
 from .utils import parse_channel_import, parse_custom_headers, parse_manual_headers, utc_timestamp
 
@@ -130,8 +132,8 @@ class RelayHost(QObject):
     def _log(self, message):
         self.log_requested.emit(str(message))
 
-    def record_relay_usage(self, project, model, input_tokens, output_tokens, cached_tokens):
-        self.owner.usage_stats.record(project, model, input_tokens, output_tokens, cached_tokens)
+    def record_relay_usage(self, project, model, input_tokens, output_tokens, cached_tokens, speed_ms=0):
+        self.owner.usage_stats.record(project, model, input_tokens, output_tokens, cached_tokens, speed_ms)
 
 
 class QtRelayDialog(QDialog):
@@ -148,14 +150,20 @@ class QtRelayDialog(QDialog):
         self.config_tab = self._build_config_tab()
         self.prompt_tab = self._build_prompt_tab()
         self.stats_tab = self._build_stats_tab()
+        self.pricing_tab = self._build_pricing_tab()
         self.tabs.addTab(self.config_tab, "中转配置")
         self.tabs.addTab(self.prompt_tab, "全局提示词")
         self.tabs.addTab(self.stats_tab, "今日统计")
+        self.tabs.addTab(self.pricing_tab, "模型定价")
         root = QVBoxLayout(self)
         root.addWidget(self.tabs)
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_stats)
         self.refresh_timer.start(1200)
+        # 实时速度单独高频刷新，只更新速度标签与速度列，避免整表重绘。
+        self.live_timer = QTimer(self)
+        self.live_timer.timeout.connect(self.refresh_live)
+        self.live_timer.start(500)
         self.refresh_stats()
         fit_window_to_screen(self, _RELAY_WINDOW_PREFERRED_SIZE, _RELAY_WINDOW_MINIMUM_SIZE)
 
@@ -254,9 +262,16 @@ class QtRelayDialog(QDialog):
         self.stats_summary = QLabel("")
         self.stats_summary.setWordWrap(True)
         layout.addWidget(self.stats_summary)
-        self.stats_table = QTableWidget(0, 8)
+        self.stats_live = QLabel("")
+        self.stats_live.setToolTip(
+            "实时速度按最近 2 秒流式输出的文本估算（≈）；单次请求速度以上游返回的输出 Token 为准"
+        )
+        layout.addWidget(self.stats_live)
+        self._stats_row_keys = []
+        self._stats_row_speeds = []
+        self.stats_table = QTableWidget(0, 10)
         self.stats_table.setHorizontalHeaderLabels(
-            ["排名", "项目-模型", "请求", "输入", "输出", "总量", "已缓存", "缓存率"]
+            ["排名", "项目-模型", "请求", "输入", "输出", "总量", "已缓存", "缓存率", "速度 tok/s", "花费"]
         )
         self.stats_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.stats_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -265,11 +280,213 @@ class QtRelayDialog(QDialog):
         self.stats_table.horizontalHeaderItem(7).setToolTip(
             "缓存率 = 已缓存 / 输入；>90% 绿色，70%–90% 蓝色，40%–<70% 橙色，<40% 红色；无输入时不着色"
         )
+        self.stats_table.horizontalHeaderItem(8).setToolTip(
+            "流式请求的平均输出速度（输出 Token / 生成耗时）；正在输出时同时显示实时估算速度"
+        )
+        self.stats_table.horizontalHeaderItem(9).setToolTip("按「模型定价」页的单价 × 倍率计算")
         layout.addWidget(self.stats_table, 1)
         clear = QPushButton("清空今日统计")
         clear.clicked.connect(self._clear_stats)
         layout.addWidget(clear, alignment=Qt.AlignRight)
         return widget
+
+    _PRICING_COLUMNS = ("项目", "模型", "输入价", "缓存输入价", "输出价", "倍率")
+    _PRICING_FIELDS = (None, "model", "input", "cached_input", "output", "multiplier")
+
+    def _build_pricing_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        hint = QLabel(
+            "单价单位为「每百万 Token」，花费 = 原价 × 倍率；缓存输入价留空时按输入价计算。"
+            "模型名为客户端请求的对外模型名，支持 * 通配；项目选「全部项目」时对所有接口生效，"
+            "指定项目的规则优先。"
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        currency_row = QHBoxLayout()
+        currency_row.addWidget(QLabel("货币符号"))
+        self.pricing_currency = QLineEdit(str(self._pricing().get("currency", "$")))
+        self.pricing_currency.setMaxLength(8)
+        self.pricing_currency.setFixedWidth(80)
+        self.pricing_currency.editingFinished.connect(self._pricing_currency_changed)
+        currency_row.addWidget(self.pricing_currency)
+        currency_row.addStretch()
+        layout.addLayout(currency_row)
+        self.pricing_table = QTableWidget(0, len(self._PRICING_COLUMNS))
+        self.pricing_table.setHorizontalHeaderLabels(list(self._PRICING_COLUMNS))
+        self.pricing_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.pricing_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.pricing_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.pricing_table.itemChanged.connect(self._pricing_item_changed)
+        layout.addWidget(self.pricing_table, 1)
+        buttons = QHBoxLayout()
+        add = QPushButton("添加")
+        remove = QPushButton("删除选中")
+        fill = QPushButton("从今日统计补全未定价模型")
+        add.clicked.connect(lambda: self._add_pricing_rule())
+        remove.clicked.connect(self._remove_pricing_rules)
+        fill.clicked.connect(self._fill_unpriced_rules)
+        buttons.addWidget(add)
+        buttons.addWidget(remove)
+        buttons.addWidget(fill)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        self.refresh_pricing()
+        return widget
+
+    def _pricing(self) -> dict:
+        relay = self.app.store.setdefault("relay", {})
+        pricing = relay.get("pricing")
+        if not isinstance(pricing, dict) or not isinstance(pricing.get("rules"), list):
+            pricing = normalize_pricing(pricing)
+            relay["pricing"] = pricing
+        return pricing
+
+    @staticmethod
+    def _format_price(value):
+        if value is None:
+            return ""
+        return f"{float(value):g}"
+
+    def _pricing_project_combo(self, project_id):
+        combo = QComboBox()
+        combo.addItem("全部项目", "")
+        for project in self.app.store.get("projects", []):
+            combo.addItem(self.app.masker.project_label(project), project.get("id", ""))
+        index = combo.findData(project_id or "")
+        if index < 0:
+            # 项目已删除时保留原 id，避免规则被悄悄改成全局生效。
+            combo.addItem("（已删除的项目）", project_id)
+            index = combo.count() - 1
+        combo.setCurrentIndex(index)
+        combo.currentIndexChanged.connect(lambda *_: self._save_pricing())
+        return combo
+
+    def refresh_pricing(self):
+        rules = self._pricing()["rules"]
+        self.pricing_table.blockSignals(True)
+        self.pricing_table.setRowCount(len(rules))
+        for row, rule in enumerate(rules):
+            self.pricing_table.setCellWidget(row, 0, self._pricing_project_combo(rule.get("project_id", "")))
+            for col in range(1, len(self._PRICING_FIELDS)):
+                field = self._PRICING_FIELDS[col]
+                value = rule.get(field)
+                text = str(value or "") if field == "model" else self._format_price(value)
+                item = QTableWidgetItem(text)
+                if col == 1:
+                    item.setData(Qt.UserRole, rule.get("id", ""))
+                self.pricing_table.setItem(row, col, item)
+        self.pricing_table.blockSignals(False)
+
+    @staticmethod
+    def _parse_number(text, allow_blank=True):
+        text = str(text or "").strip()
+        if not text:
+            return True, None
+        try:
+            value = float(text)
+        except ValueError:
+            return False, None
+        if value != value or value < 0 or value == float("inf"):
+            return False, None
+        return True, value
+
+    def _pricing_item_changed(self, item):
+        self._save_pricing()
+
+    def _save_pricing(self):
+        pricing = self._pricing()
+        old_rules = {rule.get("id"): rule for rule in pricing.get("rules", [])}
+        rules = []
+        self.pricing_table.blockSignals(True)
+        for row in range(self.pricing_table.rowCount()):
+            model_item = self.pricing_table.item(row, 1)
+            if model_item is None:
+                continue
+            rule_id = str(model_item.data(Qt.UserRole) or "")
+            previous = old_rules.get(rule_id, {})
+            combo = self.pricing_table.cellWidget(row, 0)
+            raw = {
+                "id": rule_id,
+                "project_id": combo.currentData() if combo is not None else "",
+                "model": model_item.text(),
+            }
+            for col in range(2, len(self._PRICING_FIELDS)):
+                field = self._PRICING_FIELDS[col]
+                item = self.pricing_table.item(row, col)
+                ok, value = self._parse_number(item.text() if item else "")
+                if field == "multiplier" and ok and value == 0:
+                    ok = False
+                if item is not None:
+                    item.setBackground(QColor("#ffd6d6") if not ok else QColor(0, 0, 0, 0))
+                    item.setToolTip(
+                        "" if ok else "请输入非负数字" + ("（倍率需大于 0）" if field == "multiplier" else "")
+                    )
+                # 非法输入保留上一次的有效值，避免一次手误清空价格。
+                raw[field] = value if ok else previous.get(field)
+            rule = normalize_rule(raw)
+            if rule is not None:
+                rules.append(rule)
+        self.pricing_table.blockSignals(False)
+        pricing["rules"] = rules
+        self.app.schedule_save()
+        self.refresh_stats()
+
+    def _pricing_currency_changed(self):
+        pricing = self._pricing()
+        pricing["currency"] = self.pricing_currency.text().strip()[:8] or "$"
+        self.pricing_currency.setText(pricing["currency"])
+        self.app.schedule_save()
+        self.refresh_stats()
+
+    def _add_pricing_rule(self, project_id="", model=""):
+        rule = normalize_rule({"project_id": project_id, "model": model or "新模型", "multiplier": 1})
+        self._pricing()["rules"].append(rule)
+        self.refresh_pricing()
+        self.app.schedule_save()
+        row = self.pricing_table.rowCount() - 1
+        self.pricing_table.setCurrentCell(row, 1)
+        return rule
+
+    def _remove_pricing_rules(self):
+        rows = {index.row() for index in self.pricing_table.selectedIndexes()}
+        if not rows and self.pricing_table.currentRow() >= 0:
+            rows = {self.pricing_table.currentRow()}
+        if not rows:
+            return
+        ids = {
+            str(self.pricing_table.item(row, 1).data(Qt.UserRole) or "")
+            for row in rows
+            if self.pricing_table.item(row, 1) is not None
+        }
+        pricing = self._pricing()
+        pricing["rules"] = [rule for rule in pricing["rules"] if rule.get("id") not in ids]
+        self.refresh_pricing()
+        self.app.schedule_save()
+        self.refresh_stats()
+
+    def _fill_unpriced_rules(self):
+        pricing = self._pricing()
+        snapshot = self.app.usage_stats.snapshot()
+        existing = {
+            (str(rule.get("project_id") or ""), str(rule.get("model") or "").casefold()) for rule in pricing["rules"]
+        }
+        added = 0
+        for row in snapshot.get("models", {}).values():
+            project_id = str(row.get("project_id") or "")
+            model = str(row.get("model") or "")
+            if not model or find_rule(pricing, project_id, model) is not None:
+                continue
+            if (project_id, model.casefold()) in existing:
+                continue
+            existing.add((project_id, model.casefold()))
+            pricing["rules"].append(normalize_rule({"project_id": project_id, "model": model, "multiplier": 1}))
+            added += 1
+        self.refresh_pricing()
+        self.app.schedule_save()
+        if not added:
+            QMessageBox.information(self, "模型定价", "今日统计中的模型都已设置定价")
+        return added
 
     def _prompt_changed(self, *_):
         relay = self.app.store.setdefault("relay", {})
@@ -382,6 +599,9 @@ class QtRelayDialog(QDialog):
     def _clear_stats(self):
         if QMessageBox.question(self, "清空统计", "确定清空今日用量统计吗？") == QMessageBox.Yes:
             self.app.usage_stats.clear_today()
+            meter = getattr(self.app.relay_server, "throughput", None)
+            if isinstance(meter, ThroughputMeter):
+                meter.clear_last()
             self.refresh_stats()
 
     @staticmethod
@@ -406,14 +626,24 @@ class QtRelayDialog(QDialog):
         cache_color = self._cache_rate_color(input_tokens, cached)
         if cache_color is not None:
             cache_rate = f'<span style="color: {cache_color.name()}; font-weight: 600">{cache_rate}</span>'
+        pricing = self._pricing()
+        currency = str(pricing.get("currency") or "$")
+        costs = summarize(snapshot, pricing)
+        cost_text = f"花费 {format_cost(costs['total'], currency)}"
+        if costs["unpriced"]:
+            cost_text += f"（{costs['unpriced']} 个未定价）"
         self.stats_summary.setText(
             f"请求 {snapshot.get('requests', 0)} · 输入 {input_tokens:,} · 输出 {output_tokens:,} · "
-            f"总量 {total:,} · 已缓存 {cached:,} · 缓存率 {cache_rate}"
+            f"总量 {total:,} · 已缓存 {cached:,} · 缓存率 {cache_rate} · {cost_text}"
         )
-        rows = list(snapshot.get("models", {}).values())
-        rows.sort(key=lambda row: row.get("input_tokens", 0) + row.get("output_tokens", 0), reverse=True)
-        self.stats_table.setRowCount(len(rows))
-        for index, row in enumerate(rows):
+        entries = list(snapshot.get("models", {}).items())
+        entries.sort(key=lambda pair: pair[1].get("input_tokens", 0) + pair[1].get("output_tokens", 0), reverse=True)
+        self._stats_row_keys = [
+            (str(row.get("project_id", "") or ""), str(row.get("model", "") or "")) for _, row in entries
+        ]
+        self._stats_row_speeds = [UsageStats.average_speed(row) for _, row in entries]
+        self.stats_table.setRowCount(len(entries))
+        for index, (entry_key, row) in enumerate(entries):
             in_count = int(row.get("input_tokens", 0))
             out_count = int(row.get("output_tokens", 0))
             cached_count = int(row.get("cached_tokens", 0))
@@ -427,6 +657,8 @@ class QtRelayDialog(QDialog):
                 f"{in_count + out_count:,}",
                 f"{cached_count:,}",
                 f"{cached_count / in_count * 100:.1f}%" if in_count else "-",
+                "",
+                "未定价" if costs["rows"].get(entry_key) is None else format_cost(costs["rows"][entry_key], currency),
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -436,13 +668,50 @@ class QtRelayDialog(QDialog):
                     font = item.font()
                     font.setBold(True)
                     item.setFont(font)
+                if col == 9 and costs["rows"].get(entry_key) is None:
+                    item.setForeground(QColor("#8a8a8a"))
+                    item.setToolTip("在「模型定价」页为该模型设置单价后显示花费")
                 self.stats_table.setItem(index, col, item)
+        self.refresh_live()
+
+    def _relay_throughput(self):
+        server = self.app.relay_server
+        meter = getattr(server, "throughput", None) if server is not None else None
+        snapshot = meter.snapshot() if isinstance(meter, ThroughputMeter) else None
+        return snapshot if isinstance(snapshot, dict) else None
+
+    def refresh_live(self):
+        live = self._relay_throughput()
+        if live is None:
+            self.stats_live.setText("实时速度：中转未启动")
+            per_key = {}
+        else:
+            parts = [f"实时 ≈{live['tokens_per_second']:.1f} tok/s", f"进行中 {live['active']}"]
+            if live.get("last"):
+                parts.append(f"最近 {live['last']['tokens_per_second']:.1f} tok/s")
+            self.stats_live.setText(" · ".join(parts))
+            per_key = live.get("per_key") or {}
+        for index, key in enumerate(self._stats_row_keys):
+            if index >= self.stats_table.rowCount():
+                break
+            average = self._stats_row_speeds[index] if index < len(self._stats_row_speeds) else None
+            text = "-" if average is None else f"{average:.1f}"
+            if key in per_key:
+                text = f"实时 {per_key[key]:.1f} · 均 {text}"
+            item = self.stats_table.item(index, 8)
+            if item is None:
+                item = QTableWidgetItem()
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.stats_table.setItem(index, 8, item)
+            if item.text() != text:
+                item.setText(text)
 
     def closeEvent(self, event):
         self.app.commit_form()
         self.app._save_store()
         self.app.relay_dialog = None
         self.refresh_timer.stop()
+        self.live_timer.stop()
         event.accept()
 
 
@@ -1931,8 +2200,8 @@ class QtMainWindow(QMainWindow):
     def _log(self, message):
         self.log_requested.emit(str(message))
 
-    def record_relay_usage(self, project, model, input_tokens, output_tokens, cached_tokens):
-        self.usage_stats.record(project, model, input_tokens, output_tokens, cached_tokens)
+    def record_relay_usage(self, project, model, input_tokens, output_tokens, cached_tokens, speed_ms=0):
+        self.usage_stats.record(project, model, input_tokens, output_tokens, cached_tokens, speed_ms)
 
     def restore_from_tray(self):
         self.showNormal()

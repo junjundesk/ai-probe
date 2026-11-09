@@ -13,6 +13,7 @@ from .config import (
     encrypt_config,
     save_config_key,
 )
+from .pricing import default_pricing, normalize_pricing
 from .projects import _project_keys, _sync_project_keys, new_project, project_key_by_id
 
 
@@ -47,6 +48,8 @@ def default_store() -> dict:
             "request_debug_capture": False,
             "system_prompt": "",
             "append_user_prompt": True,
+            # 模型定价：单价为每百万 Token，花费 = 原价 × 倍率。
+            "pricing": default_pricing(),
         },
         # 截图模式只影响界面显示，不改动存储里的项目内容。
         "ui": {"screenshot_mode": False},
@@ -133,6 +136,7 @@ def normalize_store(data: dict) -> dict:
     relay["request_debug_capture"] = bool(relay.get("request_debug_capture", False))
     relay["system_prompt"] = str(relay.get("system_prompt") or "")
     relay["append_user_prompt"] = bool(relay.get("append_user_prompt", True))
+    relay["pricing"] = normalize_pricing(relay.get("pricing"))
     ui = data.get("ui")
     if not isinstance(ui, dict):
         ui = {}

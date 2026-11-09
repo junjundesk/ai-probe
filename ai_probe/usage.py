@@ -51,10 +51,12 @@ class UsageStats:
         input_tokens: int,
         output_tokens: int,
         cached_tokens: int,
+        speed_ms: int = 0,
     ):
         input_tokens = max(0, int(input_tokens or 0))
         output_tokens = max(0, int(output_tokens or 0))
         cached_tokens = max(0, int(cached_tokens or 0))
+        speed_ms = max(0, int(speed_ms or 0))
         day_key = self._today()
         project_id = str(project.get("id", "") or "unknown")
         project_name = str(project.get("name", "") or "未命名项目")
@@ -84,10 +86,24 @@ class UsageStats:
             entry["input_tokens"] += input_tokens
             entry["output_tokens"] += output_tokens
             entry["cached_tokens"] += cached_tokens
+            if speed_ms > 0 and output_tokens > 0:
+                # 只累计可测速的流式请求，平均速度 = speed_output_tokens / speed_ms。
+                for target in (day, entry):
+                    target["speed_output_tokens"] = int(target.get("speed_output_tokens", 0)) + output_tokens
+                    target["speed_ms"] = int(target.get("speed_ms", 0)) + speed_ms
             now = time.time()
             if now - self._last_save >= USAGE_SAVE_INTERVAL:
                 self._last_save = now
                 self._write_locked()
+
+    @staticmethod
+    def average_speed(row) -> float | None:
+        """返回平均输出速度 tok/s；没有可测速请求时返回 None。"""
+        speed_ms = int((row or {}).get("speed_ms", 0) or 0)
+        tokens = int((row or {}).get("speed_output_tokens", 0) or 0)
+        if speed_ms <= 0 or tokens <= 0:
+            return None
+        return tokens / (speed_ms / 1000)
 
     def snapshot(self) -> dict:
         with self._lock:
